@@ -1010,6 +1010,17 @@ tbody tr:hover{background:var(--bg-subtle)}
 .sem-text{font-size:14px;font-weight:600;flex:1;letter-spacing:-.01em}
 .sem-value{font-size:18px;font-weight:700;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
 
+
+/* SaaS v3 additions */
+.saas-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+.saas-card{background:var(--bg);border:1px solid var(--bd);border-radius:var(--rl);padding:16px 18px}
+.saas-card-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--tx-3);margin-bottom:8px}
+.saas-card-val{font-size:21px;font-weight:700;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+.saas-card-sub{font-size:11px;color:var(--tx-3);margin-top:5px;line-height:1.4}
+.area-pill{display:inline-flex;align-items:center;padding:2px 7px;border-radius:6px;background:var(--bg-muted);font-size:11px;color:var(--tx-2);font-weight:500}
+.note-box{background:var(--info-sub);border:1px solid #bfdbfe;color:#1e3a8a;border-radius:var(--rl);padding:12px 14px;font-size:12px;line-height:1.55;margin-bottom:16px}
+.worker-section-title{font-size:10px;font-weight:700;color:var(--tx-3);letter-spacing:.1em;text-transform:uppercase;padding:12px 16px 8px;background:var(--bg-subtle);border-bottom:1px solid var(--bd)}
+
 /* ═══════════════════════════════════════
    DIVIDER
 ═══════════════════════════════════════ */
@@ -1127,6 +1138,8 @@ tbody tr:hover{background:var(--bg-subtle)}
 
       <!-- KPI strip — 5 items -->
       <div class="kpi-row" id="kpi-row" style="grid-template-columns:repeat(5,1fr);margin-bottom:20px"></div>
+
+      <div id="dash-saas-panels"></div>
 
       <!-- Charts: 3 col -->
       <div class="chart-grid" style="margin-bottom:20px">
@@ -1501,7 +1514,7 @@ tbody tr:hover{background:var(--bg-subtle)}
     <div class="fg-row">
       <div class="fg"><label>Nombre</label><input id="em-name" placeholder="Ej: Qztlab Spa"></div>
       <div class="fg"><label>Tipo</label>
-        <select id="em-type" onchange="updatePayOptions(this.value)">
+        <select id="em-type" onchange="onEntityTypeChange(this.value)">
           <option value="proveedor">Proveedor</option>
           <option value="trabajador">Trabajador</option>
           <option value="admin">Administrador</option>
@@ -1511,6 +1524,16 @@ tbody tr:hover{background:var(--bg-subtle)}
       </div>
     </div>
     <div class="fg"><label>Categoría de gasto</label><select id="em-cat"></select></div>
+    <div class="fg-row" id="em-worker-extra" style="display:none">
+      <div class="fg"><label>Área</label>
+        <select id="em-area">
+          <option value="cocina">Cocina</option>
+          <option value="caja">Caja</option>
+          <option value="administracion">Administración</option>
+        </select>
+      </div>
+      <div class="fg"><label>Sueldo mensual fijo</label><input id="em-salary" type="number" placeholder="0"></div>
+    </div>
     <div class="fg" id="em-pay-fg" style="display:none"><label>Tipo de pago</label>
       <select id="em-pay">
         <option value="">Sin especificar</option>
@@ -1576,8 +1599,8 @@ tbody tr:hover{background:var(--bg-subtle)}
 </div>
 
 <script>
-const DB_KEY='sf_v6'; // v6: new key — ignores all old data completely
-const DB_VER=6;
+const DB_KEY='sf_v7_saas'; // v7: SaaS-style model — trabajadores por área + caja real
+const DB_VER=7;
 let db={entities:[],categories:[],months:{}};
 let staged={v:null,m:null,c:null};
 let activeMonth=null;
@@ -3290,8 +3313,13 @@ function updatePayOptions(type){
     <option value="previred">Previred</option>
   `;
 }
-function populateCatSel(id,sel){
-  document.getElementById(id).innerHTML=db.categories.map(c=>`<option value="${c._id||c.id}" ${(c._id||c.id)===sel?'selected':''}>${c.name}</option>`).join('');
+function populateCatSel(id,sel,type){
+  const allowed=type?allowedGroupsForEntityType(type):null;
+  const cats=db.categories
+    .filter(c=>!allowed||allowed.includes(c.group))
+    .sort((a,b)=>String(a.name).localeCompare(String(b.name),'es'));
+  const selected=sel||defaultCatForType?.(type)||'';
+  document.getElementById(id).innerHTML=cats.map(c=>`<option value="${c._id||c.id}" ${(c._id||c.id)===selected?'selected':''}>${c.name}</option>`).join('');
 }
 function addAlias(){const v=document.getElementById('em-alias-in').value.trim();if(v&&!tmpAliases.includes(v)){tmpAliases.push(v);renderTags();}document.getElementById('em-alias-in').value='';}
 function addKw(){const v=document.getElementById('em-kw-in').value.trim();if(v&&!tmpKws.includes(v)){tmpKws.push(v);renderTags();}document.getElementById('em-kw-in').value='';}
@@ -3628,9 +3656,632 @@ function renderBalance(){
   ].map(k=>`<div class="kpi ${k.cls}"><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div><div class="kpi-note">${k.note}</div></div>`).join('');
 }
 
+
+// ── SaaS V3 OVERRIDES ─────────────────────────────────────────────────────
+// Objetivo: separar ventas de sistema vs caja real, mejorar trabajadores/proveedores,
+// conciliación de propinas y tratar al administrador como cuenta puente.
+
+// ── V3 compatibility helpers ─────────────────────────────────────────────
+function normText(v){
+  return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+}
+function upsertCat(c){
+  const id=c._id||c.id;
+  const obj={...c,_id:id,id};
+  const i=db.categories.findIndex(x=>(x._id||x.id)===id);
+  if(i>=0)db.categories[i]={...db.categories[i],...obj};
+  else db.categories.push(obj);
+}
+function safeEntityCat(ent){return ent?.cat||'aj_sin';}
+function ensureBaseData(){
+  db.entities=db.entities||[];db.categories=db.categories||[];db.months=db.months||{};
+  if(!db.categories.length)seedCats();
+  if(!db.entities.length)seedEnts();
+}
+
+const ADMIN_BASE_SALARY=825000;
+const AREA_LABELS={cocina:'Cocina',caja:'Caja',administracion:'Administración'};
+const PAY_LABELS={sueldo:'Sueldo base',turno:'Turno',propina:'Propinas',bono:'Bono',finiquito:'Finiquito',anticipo:'Anticipo',reembolso:'Reembolso',previred:'Previred',retiro:'Retiro',compra:'Compra personal',puente:'Cuenta puente',admin_base:'Sueldo fijo admin'};
+
+function ensureSaaSBaseData(){
+  [
+    {id:'fc_abarrotes',name:'Abarrotes',group:'costo_variable',parent:'',source:'ambos'},
+    {id:'op_packaging',name:'Packaging y descartables',group:'gasto_operacional',parent:'',source:'ambos'},
+    {id:'op_publicidad',name:'Publicidad',group:'gasto_operacional',parent:'',source:'ambos'},
+    {id:'op_admin',name:'Gastos administrativos',group:'gasto_operacional',parent:'',source:'ambos'},
+    {id:'op_internet',name:'Internet y telefonía',group:'costo_fijo',parent:'',source:'ambos'},
+    {id:'op_otros',name:'Otros gastos',group:'gasto_operacional',parent:'',source:'ambos'},
+    {id:'op_aseo',name:'Aseo',group:'gasto_operacional',parent:'',source:'ambos'},
+    {id:'rem_admin_sueldo',name:'Sueldo administración fijo',group:'remuneraciones',parent:'',source:'manual'},
+    {id:'ic_admin_puente',name:'Cuenta puente administrador',group:'intercompany',parent:'',source:'ambos'},
+    {id:'op_rendiciones',name:'Rendiciones pendientes',group:'ajuste',parent:'',source:'ambos'},
+  ].forEach(upsertCat);
+  db._meta=db._meta||{};
+  db._meta.appVersion='v3-saas';
+  db._meta.lastSavedAt=db._meta.lastSavedAt||Date.now();
+  db.entities.forEach(ent=>{
+    if(ent.type==='admin'){
+      ent.area='administracion';
+      ent.salary=Number(ent.salary)||ADMIN_BASE_SALARY;
+      ent.pay=ent.pay||'puente';
+      if(!['ic_admin_puente','ic_reembolso','ic_admin','op_rendiciones','op_admin'].includes(ent.cat))ent.cat='ic_admin_puente';
+      if(ent.cat==='ic_admin')ent.cat='ic_admin_puente';
+    } else if(ent.type==='trabajador'){
+      ent.area=ent.area||(/javier|delivery|deli/i.test(ent.name)?'caja':'cocina');
+      ent.salary=Number(ent.salary)||0;
+    }
+  });
+  const admin=db.entities.find(e=>e.type==='admin');
+  if(!admin){
+    db.entities.push({_id:'admin_christopher',name:'Christopher Müller',type:'admin',cat:'ic_admin_puente',pay:'puente',area:'administracion',salary:ADMIN_BASE_SALARY,aliases:['Christopher Mu','Christopher Muller'],kws:['christopher','admin']});
+  }
+}
+
+const _baseEnsureBaseData=ensureBaseData;
+ensureBaseData=function(){_baseEnsureBaseData();ensureSaaSBaseData();saveDB();};
+
+const _baseSaveDB=saveDB;
+saveDB=function(){db._meta=db._meta||{};db._meta.lastSavedAt=Date.now();_baseSaveDB();};
+
+function adminFixedSalary(){
+  return db.entities.filter(e=>e.type==='admin').reduce((s,e)=>s+(Number(e.salary)||ADMIN_BASE_SALARY),0);
+}
+function sumTipsPaid(monthKey){
+  const d=db.months[monthKey]||{};const mov=d.movimiento||{};const cartola=d.cartola||{};
+  let banco=0,caja=0;
+  (cartola.giros||[]).forEach(g=>{const r=classifyCartola(g.desc);if(r.cat==='rem_propina')banco+=g.monto;});
+  (mov.egresos||[]).forEach(e=>{const r=classifyCaja(e);const tags=r.tags||[{cat:r.cat}];if(tags.some(t=>t.cat==='rem_propina'))caja+=e.monto;});
+  return {banco,caja,total:banco+caja};
+}
+function realBankIncomeBreakdown(monthKey){
+  const d=db.months[monthKey]||{};const cartola=d.cartola||{};const abonos=cartola.abonos||[];
+  const rows=[];
+  const sum=re=>abonos.filter(a=>re.test(a.desc)).reduce((s,a)=>s+a.monto,0);
+  const tbk=sum(/tbk|transbank|webpay/i);
+  const junaeb=sum(/edenred|junaeb/i);
+  const apps=sum(/pedidosya|uber|rappi/i);
+  const other=(cartola.totalAbonos||0)-tbk-junaeb-apps;
+  if(tbk)rows.push({l:'Transbank / tarjetas',v:tbk});
+  if(junaeb)rows.push({l:'Edenred / Junaeb',v:junaeb});
+  if(apps)rows.push({l:'Plataformas delivery',v:apps});
+  if(other)rows.push({l:'Otros abonos banco',v:other});
+  return rows;
+}
+function systemSalesReference(v){
+  return {
+    local:(v.debito||0)+(v.credito||0)+(v.efectivo||0)+(v.transferencia||0),
+    apps:(v.pedidosya||0)+(v.pyVouchers||0)+(v.ubereats||0),
+    junaeb:(v.convenio||0),
+    propinas:(v.propinas||0),
+    total:(v.ventaNeta||0)
+  };
+}
+function computeGastosReales(monthKey){
+  const d=db.months[monthKey]||{};const cartola=d.cartola||{};const mov=d.movimiento||{};
+  const byCat={};
+  const add=(cat,amount)=>{byCat[cat]=(byCat[cat]||0)+amount;};
+  (cartola.giros||[]).forEach(g=>{const r=classifyCartola(g.desc);add(r.cat,g.monto);});
+  (mov.egresos||[]).forEach(e=>{const r=classifyCaja(e);const tags=r.tags||[{cat:r.cat}];const share=e.monto/tags.length;tags.forEach(t=>add(t.cat,share));});
+  add('rem_admin_sueldo',adminFixedSalary());
+  return byCat;
+}
+function computeCajonTotalByIds(ids, monthKey){
+  const byCat=computeGastosReales(monthKey||activeMonth);
+  return ids.reduce((s,id)=>s+(byCat[id]||0),0);
+}
+
+const _baseComputeCajon=computeCajon;
+computeCajon=function(cajon,cartola,mov){
+  const result=_baseComputeCajon(cajon,cartola,mov);
+  if(cajon?.id==='labor_cost'){
+    result.total=(result.total||0)+adminFixedSalary();
+    result.banco=result.banco||0;
+    result.caja=(result.caja||0)+adminFixedSalary();
+  }
+  if(cajon?.id==='comisiones'){
+    // En v3 no se descuentan comisiones por diferencia POS vs banco dentro del gasto mensual.
+    // Los depósitos tienen delay; esto queda como referencia de conciliación, no como gasto.
+    return {total:0,banco:0,caja:0};
+  }
+  return result;
+};
+
+const _baseSafeEntityCat=safeEntityCat;
+safeEntityCat=function(ent){
+  if(ent.type==='admin')return ent.cat==='rem_sueldo'||ent.cat==='ic_admin'?'ic_admin_puente':(ent.cat||'ic_admin_puente');
+  return _baseSafeEntityCat(ent);
+};
+
+
+const _baseClassifyCartola=classifyCartola;
+classifyCartola=function(desc){
+  const r=_baseClassifyCartola(desc);
+  const raw=normText(desc);
+  if(/meta ads|facebook ads|instagram ads|publicidad|marketing|google ads/.test(raw))return {entity:null,cat:'op_publicidad',label:'Publicidad'};
+  if(/internet|fibra|telefonia|telefono|movistar|entel|wom|vtr|claro/.test(raw))return {entity:null,cat:'op_internet',label:'Internet y telefonía'};
+  if(/vaso|vasos|caja|cajas|bolsa|bolsas|servilleta|envase|packaging|papel/.test(raw))return {entity:null,cat:'op_packaging',label:'Packaging y descartables'};
+  const admin=db.entities.find(e=>e.type==='admin'&&((e.aliases||[]).some(a=>raw.includes(normText(a)))||raw.includes(normText(e.name))));
+  if(admin && !/sueldo|propina|finiquito/.test(raw))return {entity:admin,cat:'ic_admin_puente',label:'Cuenta puente administrador'};
+  return r;
+};
+
+const _baseClassifyCaja=classifyCaja;
+classifyCaja=function(item){
+  const r=_baseClassifyCaja(item);
+  const raw=normText(item?.comentario||'');
+  if(/meta ads|instagram|facebook|publicidad|marketing|google ads/.test(raw))return {entity:null,cat:'op_publicidad',label:'Publicidad',tags:[{cat:'op_publicidad',label:'Publicidad'}]};
+  if(/internet|wifi|fibra|telefono|telefonia|entel|movistar|wom|claro|vtr/.test(raw))return {entity:null,cat:'op_internet',label:'Internet y telefonía',tags:[{cat:'op_internet',label:'Internet y telefonía'}]};
+  if(/vaso|vasos|caja|cajas|bolsa|bolsas|servilleta|envase|packaging|papel/.test(raw))return {entity:null,cat:'op_packaging',label:'Packaging y descartables',tags:[{cat:'op_packaging',label:'Packaging y descartables'}]};
+  if(/abarrote|abarrotes|jumbo|lider|unimarc|santa isabel|mayorista/.test(raw))return {entity:null,cat:'fc_abarrotes',label:'Abarrotes',tags:[{cat:'fc_abarrotes',label:'Abarrotes'}]};
+  if(/notaria|sii|municipalidad|patente|legal|tramite|administrativo/.test(raw))return {entity:null,cat:'op_admin',label:'Gastos administrativos',tags:[{cat:'op_admin',label:'Gastos administrativos'}]};
+  // Si aparece el administrador en caja, por defecto no es sueldo: es cuenta puente/rendición.
+  const admin=db.entities.find(e=>e.type==='admin'&&((e.kws||[]).some(k=>raw.includes(normText(k)))||(e.name&&raw.includes(normText(e.name)))));
+  if(admin && !/propina|turno|sueldo/i.test(item.comentario||'')){
+    return {entity:admin,cat:'ic_admin_puente',label:'Cuenta puente administrador',tags:[{cat:'ic_admin_puente',label:'Cuenta puente administrador'}]};
+  }
+  return r;
+};
+
+const _baseRenderDash=renderDash;
+renderDash=function(){
+  _baseRenderDash();
+  renderSaaSPanels();
+};
+
+function renderSaaSPanels(){
+  const el=document.getElementById('dash-saas-panels');
+  if(!el||!activeMonth||!db.months[activeMonth])return;
+  const d=db.months[activeMonth];const v=d.ventas||{};const mov=d.movimiento||{};const cartola=d.cartola||{};
+  const ventas=systemSalesReference(v);
+  const ingresosBanco=realBankIncomeBreakdown(activeMonth);
+  const ingresosReales=ingresosBanco.reduce((s,x)=>s+x.v,0)+(mov.totalIngresos||0);
+  const prop=sumTipsPaid(activeMonth);
+  const propSis=v.propinas||0;
+  const propDiff=propSis-prop.total;
+  const byCat=computeGastosReales(activeMonth);
+  const totalGastos=Object.values(byCat).reduce((s,x)=>s+x,0);
+  const bancoDelay=ventas.total-ingresosReales;
+  const months=Object.keys(db.months).sort();
+  const propRows=months.map(m=>{const md=db.months[m];const ps=md.ventas?.propinas||0;const pp=sumTipsPaid(m).total;return `<tr><td>${mLabel(m)}</td><td class="tr">${fCLP(ps)}</td><td class="tr">${fCLP(pp)}</td><td class="tr ${ps-pp>0?'tn':'tp'}">${fCLP(ps-pp)}</td></tr>`;}).join('');
+  const incomeRows=ingresosBanco.map(x=>`<div class="cf-row"><span class="cf-label">${x.l}</span><span class="cf-amount tp">${fCLP(x.v)}</span><span class="cf-pct">${ingresosReales?(x.v/ingresosReales*100).toFixed(0):0}%</span></div>`).join('');
+  el.innerHTML=`
+    <div class="note-box"><strong>Lectura v3:</strong> Toteat muestra ventas del sistema; la cartola muestra flujo real de banco del mes. Por eso el dashboard separa <strong>ventas generadas</strong>, <strong>ingresos efectivamente recibidos</strong> y <strong>gastos reales pagados</strong>. Las diferencias con Transbank/apps se tratan como conciliación por delay, no como comisión automática.</div>
+    <div class="saas-grid">
+      <div class="saas-card"><div class="saas-card-title">Ventas sistema Toteat</div><div class="saas-card-val">${fCLP(ventas.total)}</div><div class="saas-card-sub">Referencia comercial del mes. No equivale a plata inmediata en banco.</div></div>
+      <div class="saas-card"><div class="saas-card-title">Ingresos reales recibidos</div><div class="saas-card-val tp">${fCLP(ingresosReales)}</div><div class="saas-card-sub">Abonos banco + ingresos manuales de caja.</div></div>
+      <div class="saas-card"><div class="saas-card-title">Gastos reales pagados</div><div class="saas-card-val tn">${fCLP(totalGastos)}</div><div class="saas-card-sub">Banco + caja efectivo + sueldo fijo admin.</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+      <div class="cf-block" style="margin:0">
+        <div class="cf-block-header"><h3>Conciliación ventas sistema vs banco</h3><span class="cf-total ${bancoDelay>=0?'tn':'tp'}">${fCLP(Math.abs(bancoDelay))}</span></div>
+        <div class="cf-row"><span class="cf-label">Venta sistema Toteat</span><span class="cf-amount">${fCLP(ventas.total)}</span></div>
+        ${incomeRows||'<div class="cf-row"><span class="cf-label tm">Sin abonos banco clasificados</span></div>'}
+        <div class="cf-row"><span class="cf-label">Caja efectivo · ingresos manuales</span><span class="cf-amount tp">${fCLP(mov.totalIngresos||0)}</span></div>
+        <div class="cf-saldo-row"><span>Diferencia referencial / delay</span><span class="${bancoDelay>=0?'tn':'tp'}">${fCLP(Math.abs(bancoDelay))}</span></div>
+      </div>
+      <div class="cf-block" style="margin:0">
+        <div class="cf-block-header"><h3>Conciliación propinas</h3><span class="cf-total ${propDiff>0?'tn':'tp'}">${fCLP(Math.abs(propDiff))}</span></div>
+        <div class="cf-row"><span class="cf-label">Propinas según Toteat</span><span class="cf-amount">${fCLP(propSis)}</span></div>
+        <div class="cf-row"><span class="cf-label">Propinas pagadas banco</span><span class="cf-amount tn">${fCLP(prop.banco)}</span></div>
+        <div class="cf-row"><span class="cf-label">Propinas pagadas caja</span><span class="cf-amount tn">${fCLP(prop.caja)}</span></div>
+        <div class="cf-saldo-row"><span>${propDiff>0?'Pendiente por pagar':'Diferencia a favor / sobrepago'}</span><span class="${propDiff>0?'tn':'tp'}">${fCLP(Math.abs(propDiff))}</span></div>
+      </div>
+    </div>
+    ${months.length>1?`<div class="sh" style="margin-top:0"><h2>Propinas mes a mes</h2></div><div class="tbl-wrap" style="margin-bottom:20px"><table><thead><tr><th>Mes</th><th class="tr">Toteat</th><th class="tr">Pagadas</th><th class="tr">Diferencia</th></tr></thead><tbody>${propRows}</tbody></table></div>`:''}
+  `;
+}
+
+renderCF=function(){
+  const months=Object.keys(db.months).sort();
+  if(!months.length){show('cf-empty',true);show('cf-content',false);return;}
+  if(!activeMonth||!db.months[activeMonth])activeMonth=months[months.length-1];
+  show('cf-empty',false);show('cf-content',true);
+  document.getElementById('cf-tabs-top').innerHTML=months.map(m=>`<span class="month-tab ${m===activeMonth?'active':''}" onclick="activeMonth='${m}';renderCF()">${mLabel(m)}</span>`).join('');
+  const d=db.months[activeMonth];const mov=d.movimiento||{};const cartola=d.cartola||{};const v=d.ventas||{};
+  const incomeRows=realBankIncomeBreakdown(activeMonth);
+  if((mov.totalIngresos||0)>0)incomeRows.push({l:'Caja efectivo · ingresos manuales',v:mov.totalIngresos});
+  const totIng=incomeRows.reduce((s,x)=>s+x.v,0);
+  document.getElementById('cf-ing-total').textContent=fCLP(totIng);
+  document.getElementById('cf-ing-rows').innerHTML=`<div class="note-box" style="margin:0;border-radius:0;border-left:none;border-right:none">Ingresos del flujo = abonos reales del banco + ingresos manuales de caja. Las ventas de Toteat quedan como referencia comercial: ${fCLP(v.ventaNeta||0)}.</div>`+
+    (incomeRows.map(x=>`<div class="cf-row"><span class="cf-label">${x.l}</span><span class="cf-amount tp">${fCLP(x.v)}</span><span class="cf-pct">${totIng?(x.v/totIng*100).toFixed(0):0}%</span></div>`).join('') || '<div class="cf-row"><span class="cf-label tm">Sin ingresos reales detectados</span></div>');
+  const byCat=computeGastosReales(activeMonth);
+  const totEg=Object.values(byCat).reduce((s,v)=>s+v,0);
+  document.getElementById('cf-eg-total').textContent='−'+fCLP(totEg);
+  document.getElementById('cf-eg-rows').innerHTML=Object.entries(byCat).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).map(([cat,v])=>{
+    const grp=getCatGroup(cat);const prefix=grp==='costo_variable'?'Food cost':grp==='remuneraciones'?'Personal':grp==='costo_fijo'?'Fijo':grp==='gasto_operacional'?'Operacional':grp==='intercompany'?'Puente/Admin':grp==='impuestos'?'Impuestos':'Otros';
+    return `<div class="cf-row"><span class="cf-label"><strong>${prefix}</strong> · ${getCatName(cat)}</span><span class="cf-amount tn">${fCLP(v)}</span><span class="cf-pct">${totEg?(v/totEg*100).toFixed(0):0}%</span></div>`;
+  }).join('') || '<div class="cf-row"><span class="cf-label tm">Sin egresos detectados</span></div>';
+  const saldoIni=cartola.saldoInicial||0;const saldoFin=cartola.saldoFinal||0;const netoCaja=(mov.totalIngresos||0)-(mov.totalEgresos||0);
+  document.getElementById('cf-saldo-ini').textContent=fCLP(saldoIni);
+  document.getElementById('cf-abonos').textContent=fCLP(cartola.totalAbonos||0);
+  document.getElementById('cf-giros').textContent='−'+fCLP(cartola.totalGiros||0);
+  const nc=document.getElementById('cf-neto-caja');nc.textContent=(netoCaja>=0?'+':'')+fCLP(netoCaja);nc.className='cf-amount '+(netoCaja>=0?'tp':'tn');
+  document.getElementById('cf-saldo-fin').textContent=fCLP(saldoFin);
+  document.getElementById('cf-banco').innerHTML=(cartola.giros||[]).map(g=>{const r=classifyCartola(g.desc);const ent=r.entity;const display=ent?ent.name:(r.label||g.desc.substring(0,32));const grp=getCatGroup(r.cat);const bc=r.cat==='aj_sin'?'b-red':grp==='remuneraciones'?'b-blue':grp==='costo_variable'?'b-amber':grp==='intercompany'?'b-red':'b-gray';return `<tr><td class="tm">${g.fecha}</td><td>${display}<div class="tm" style="font-size:11px">${g.desc}</div></td><td class="tr">${fCLP(g.monto)}</td><td><span class="badge ${bc}">${getCatName(r.cat)}</span></td></tr>`;}).join('');
+  renderCajaDetailTable('cf-caja-detail',mov.egresos||[]);
+};
+
+renderEntityPage=function(type){
+  if(type==='trabajador'){
+    const areas=['cocina','caja','administracion'];
+    const rows=areas.map(area=>{
+      const items=db.entities.filter(e=>(e.type==='trabajador'||e.type==='admin')&&(e.area||'cocina')===area);
+      if(!items.length)return '';
+      return `<div class="worker-section-title">${AREA_LABELS[area]}</div>`+items.map(ent=>`
+        <div class="worker-row">
+          <div class="wr-dot" style="background:${ent.type==='admin'?'#c8102e':'#2563eb'};width:7px;height:7px;border-radius:50%;flex-shrink:0"></div>
+          <div style="flex:0 0 155px;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ent.name}</div>
+          <div style="flex:0 0 130px;font-size:12px;color:var(--tx-3)">${PAY_LABELS[ent.pay]||getCatName(ent.cat)}${Number(ent.salary)?`<div class="tm">${fCLP(ent.salary)}/mes</div>`:''}</div>
+          <div style="flex:1;display:flex;gap:4px;flex-wrap:wrap;min-width:0">${(ent.aliases||[]).map(a=>`<span class="badge b-gray">${a}</span>`).join('')||'<span style="color:var(--tx-3);font-size:11px">—</span>'}</div>
+          <div style="flex:0 0 auto;min-width:100px;display:flex;gap:4px;flex-wrap:wrap">${(ent.kws||[]).map(k=>`<span class="badge b-blue">${k}</span>`).join('')||'<span style="color:var(--tx-3);font-size:11px">—</span>'}</div>
+          <div class="pi-actions" style="flex-shrink:0;margin-left:8px"><button class="btn-icon" onclick="openEntityModal('${ent._id}')" title="Editar"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 2.5l2 2L4 12H2v-2L9.5 2.5z"/></svg></button><button class="btn-icon danger" onclick="deleteEntity('${ent._id}')" title="Eliminar"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h10M5 3V2h4v1M4 3v8h6V3"/></svg></button></div>
+        </div>`).join('');
+    }).join('');
+    document.getElementById('worker-list').innerHTML=rows||'<div class="empty" style="padding:28px"><p>Sin trabajadores.</p></div>';
+    return;
+  }
+  let items=db.entities.filter(e=>['proveedor','intercompany','admin','otro'].includes(e.type));
+  if(currentProvFilter!=='todos')items=items.filter(e=>getCatGroup(e.cat)===currentProvFilter);
+  const dotColor={proveedor:'#0f7b5a',trabajador:'#2563eb',admin:'#c8102e',intercompany:'#b45309',otro:'#9b9b9b'};
+  document.getElementById('prov-list').innerHTML=items.length?items.map(ent=>`<div class="prov-item"><div class="pi-type" style="background:${dotColor[ent.type]||'#9b9b9b'}"></div><div class="pi-name">${ent.name}${ent.type==='admin'?'<div class="tm">Cuenta puente · sueldo fijo en trabajadores</div>':''}</div><div class="pi-cat tm">${getCatName(ent.cat)}</div><div class="pi-tags">${(ent.aliases||[]).map(a=>`<span class="badge b-gray">${a}</span>`).join('')}</div><div class="pi-actions"><button class="btn-icon" onclick="openEntityModal('${ent._id}')" title="Editar"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 2.5l2 2L4 12H2v-2L9.5 2.5z"/></svg></button><button class="btn-icon danger" onclick="deleteEntity('${ent._id}')" title="Eliminar"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h10M5 3V2h4v1M4 3v8h6V3"/></svg></button></div></div>`).join(''):'<div class="empty" style="padding:28px"><p>Sin resultados para este filtro.</p></div>';
+  const allUnm={};Object.entries(db.months).forEach(([,d])=>{(d.cartola?.giros||[]).forEach(g=>{if(classifyCartola(g.desc).cat==='aj_sin'){allUnm[g.desc]=(allUnm[g.desc]||0)+g.monto;}});});
+  const entries=Object.entries(allUnm);document.getElementById('prov-unmatched').style.display=entries.length?'block':'none';
+  document.getElementById('prov-unmatched-body').innerHTML=entries.sort((a,b)=>b[1]-a[1]).map(([n,v])=>`<tr><td>${n}</td><td class="tr">${fCLP(v)}</td><td><button class="btn" style="padding:3px 9px;font-size:11px" onclick="openEntityModalWithAlias('${n.replace(/'/g,"\\'")}')">Asignar →</button></td></tr>`).join('');
+};
+
+updatePayOptions=function(type){
+  const sel=document.getElementById('em-pay');const fg=document.getElementById('em-pay-fg');const extra=document.getElementById('em-worker-extra');
+  const isWorker=type==='trabajador', isAdmin=type==='admin';
+  fg.style.display=(isWorker||isAdmin)?'flex':'none';
+  extra.style.display=(isWorker||isAdmin)?'grid':'none';
+  sel.innerHTML=isAdmin?`<option value="puente">Cuenta puente / rendición</option><option value="admin_base">Sueldo fijo administración</option><option value="reembolso">Reembolso a administrador</option><option value="retiro">Retiro / sueldo empresarial</option><option value="compra">Pago de compra personal</option>`:`<option value="sueldo">Sueldo base</option><option value="turno">Turno</option><option value="propina">Propinas</option><option value="bono">Bono</option><option value="finiquito">Finiquito</option><option value="anticipo">Anticipo</option><option value="previred">Previred</option>`;
+};
+
+onEntityTypeChange=function(type){
+  updatePayOptions(type);populateCatSel('em-cat','',type);
+  const area=document.getElementById('em-area');const salary=document.getElementById('em-salary');
+  if(type==='admin'){area.value='administracion';salary.value=ADMIN_BASE_SALARY;}
+  else if(type==='trabajador'){area.value=area.value||'cocina';salary.value=salary.value||'';}
+  if(type==='trabajador'){document.getElementById('em-name').placeholder='Ej: Miriam Muñoz';document.getElementById('em-alias-in').placeholder='Nombre exacto en cartola si se paga por banco';document.getElementById('em-kw-in').placeholder='Ej: miriam, pago miriam, turno miriam';}
+  else if(type==='proveedor'){document.getElementById('em-name').placeholder='Ej: Proveedor / razón social';document.getElementById('em-alias-in').placeholder='Ej: Nombre que aparece en cartola';document.getElementById('em-kw-in').placeholder='Opcional: palabra para caja efectivo';}
+};
+
+allowedGroupsForEntityType=function(type){
+  if(type==='trabajador')return ['remuneraciones','costo_variable'];
+  if(type==='admin')return ['intercompany','gasto_operacional','remuneraciones','ajuste'];
+  if(type==='intercompany')return ['intercompany'];
+  if(type==='proveedor')return ['costo_variable','costo_fijo','gasto_operacional','impuestos','ajuste'];
+  return ['costo_variable','costo_fijo','gasto_operacional','remuneraciones','impuestos','intercompany','ajuste'];
+};
+defaultCatForType=function(type){if(type==='trabajador')return 'rem_sueldo';if(type==='admin')return 'ic_admin_puente';if(type==='intercompany')return 'ic_mafia';if(type==='proveedor')return 'op_otros';return 'op_otros';};
+
+const _baseOpenEntityModal=openEntityModal;
+openEntityModal=function(id,defaultType){
+  _baseOpenEntityModal(id,defaultType);
+  const ent=id?db.entities.find(e=>e._id===id):null;const type=ent?ent.type:(defaultType||'proveedor');
+  updatePayOptions(type);
+  document.getElementById('em-pay').value=ent?(ent.pay||defaultCatForType(type)):(type==='admin'?'puente':type==='trabajador'?'sueldo':'');
+  document.getElementById('em-area').value=ent?(ent.area|| (type==='admin'?'administracion':'cocina')):(type==='admin'?'administracion':'cocina');
+  document.getElementById('em-salary').value=ent?(Number(ent.salary)||''):(type==='admin'?ADMIN_BASE_SALARY:'');
+};
+
+const _baseSaveEntity=saveEntity;
+saveEntity=function(){
+  const name=document.getElementById('em-name').value.trim();if(!name){alert('El nombre es obligatorio');return;}
+  const type=document.getElementById('em-type').value;const cat=document.getElementById('em-cat').value;if(!cat){alert('Selecciona una categoría de gasto');return;}
+  const pay=(type==='trabajador'||type==='admin')?document.getElementById('em-pay').value:'';
+  const obj={_id:editEntId||'e'+Date.now(),name,type,cat,pay,aliases:[...tmpAliases],kws:[...tmpKws]};
+  if(type==='trabajador'||type==='admin'){obj.area=document.getElementById('em-area').value||'cocina';obj.salary=Number(document.getElementById('em-salary').value)||0;}
+  if(type==='admin'&&!obj.salary)obj.salary=ADMIN_BASE_SALARY;
+  if(type==='admin'&&obj.cat==='ic_admin')obj.cat='ic_admin_puente';
+  if(editEntId){const i=db.entities.findIndex(e=>e._id===editEntId);if(i>-1)db.entities[i]=obj;}else db.entities.push(obj);
+  ensureSaaSBaseData();saveDB();closeModal('modal-entity');renderEntityPage(obj.type==='trabajador'||obj.type==='admin'?'trabajador':'proveedor');
+};
+
+const _baseExportData=exportData;
+exportData=function(){
+  const payload={...db,_exportedAt:new Date().toISOString(),_app:'Street Flags Finanzas SaaS v3'};
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));a.download=`sf_finanzas_respaldo_v3_${new Date().toISOString().slice(0,10)}.json`;a.click();
+};
+
+
+function setupAliasEnterHandlers(){
+  const alias=document.getElementById('em-alias-in');
+  const kw=document.getElementById('em-kw-in');
+  if(alias)alias.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addAlias();}});
+  if(kw)kw.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addKw();}});
+}
+
+
+
+// ── V4 UX OVERRIDES: clasificación rápida + trabajadores por área ─────────
+// Esta capa mejora la experiencia sin romper la lógica existente.
+if(typeof upsertCat==='undefined'){
+  function upsertCat(cat){
+    db.categories=db.categories||[];
+    const id=cat._id||cat.id;
+    const i=db.categories.findIndex(c=>(c._id||c.id)===id);
+    const next={...cat,_id:id,id:id};
+    if(i>=0) db.categories[i]={...db.categories[i],...next};
+    else db.categories.push(next);
+  }
+}
+
+const V4_AREA_ORDER=['cocina','caja','administracion'];
+const V4_AREA_LABELS={cocina:'Cocina',caja:'Caja',administracion:'Administración'};
+const V4_TYPE_LABELS={proveedor:'Proveedor',trabajador:'Trabajador',admin:'Administrador / cuenta puente',intercompany:'Intercompany',otro:'Otro'};
+const V4_PRIORITY_CATS={
+  proveedor:['fc_carnes','fc_abarrotes','fc_pan','fc_bebidas','fc_verduras','fc_papas','op_packaging','op_publicidad','op_internet','op_admin','op_otros'],
+  trabajador:['rem_sueldo','rem_turno','rem_propina','rem_bono','rem_anticipo','rem_finiquito'],
+  admin:['ic_admin_puente','op_rendiciones','rem_admin_sueldo','ic_reembolso','op_admin','op_otros'],
+  intercompany:['ic_mafia','ic_admin_puente'],
+  otro:['op_otros','op_admin','aj_sin']
+};
+
+function v4EnsureData(){
+  [
+    {id:'fc_abarrotes',name:'Abarrotes',group:'costo_variable',parent:'',source:'ambos'},
+    {id:'op_packaging',name:'Packaging y descartables',group:'gasto_operacional',parent:'',source:'ambos'},
+    {id:'op_publicidad',name:'Publicidad',group:'gasto_operacional',parent:'',source:'ambos'},
+    {id:'op_internet',name:'Internet y telefonía',group:'costo_fijo',parent:'',source:'cartola'},
+    {id:'op_admin',name:'Gastos administrativos',group:'gasto_operacional',parent:'',source:'ambos'},
+    {id:'op_otros',name:'Otros gastos',group:'gasto_operacional',parent:'',source:'ambos'},
+    {id:'rem_admin_sueldo',name:'Sueldo administración fijo',group:'remuneraciones',parent:'',source:'manual'},
+    {id:'ic_admin_puente',name:'Cuenta puente administrador',group:'intercompany',parent:'',source:'ambos'},
+    {id:'op_rendiciones',name:'Rendiciones pendientes',group:'ajuste',parent:'',source:'ambos'}
+  ].forEach(upsertCat);
+  db.entities=(db.entities||[]).map(e=>{
+    if(e.type==='admin') return {...e,area:'administracion',salary:Number(e.salary)||825000,pay:e.pay||'puente',cat:e.cat==='ic_admin'?'ic_admin_puente':(e.cat||'ic_admin_puente')};
+    if(e.type==='trabajador') return {...e,area:e.area||'cocina',salary:Number(e.salary)||0};
+    return e;
+  });
+}
+
+function v4Norm(txt){return String(txt||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();}
+function v4CleanBankAlias(desc){
+  let s=String(desc||'').trim();
+  s=s.replace(/^transferencia\s+(a|de)\s+/i,'').replace(/^pago\s+(a|de)\s+/i,'').replace(/^abono\s+/i,'');
+  s=s.replace(/\b(spa|ltda|s\.a\.|sa|eirl)\b/ig,m=>m.toUpperCase());
+  return s.replace(/\s+/g,' ').trim();
+}
+function v4Title(s){return String(s||'').toLowerCase().split(' ').filter(Boolean).map(w=>w.length<=3?w.toUpperCase():w.charAt(0).toUpperCase()+w.slice(1)).join(' ');}
+function v4CatById(id){return (db.categories||[]).find(c=>(c._id||c.id)===id);}
+function v4SortedCats(type){
+  const groups = typeof allowedGroupsForEntityType==='function' ? allowedGroupsForEntityType(type) : ['costo_variable','costo_fijo','gasto_operacional','remuneraciones','intercompany','ajuste','impuestos'];
+  const cats=(db.categories||[]).filter(c=>groups.includes(c.group));
+  const pr=V4_PRIORITY_CATS[type]||[];
+  return cats.sort((a,b)=>{
+    const ia=pr.indexOf(a._id||a.id), ib=pr.indexOf(b._id||b.id);
+    if(ia!==-1 || ib!==-1) return (ia===-1?999:ia)-(ib===-1?999:ib);
+    return String(a.name).localeCompare(String(b.name),'es');
+  });
+}
+function v4BadgeClass(cat){
+  const g=getCatGroup(cat);
+  if(g==='costo_variable')return'b-amber';
+  if(g==='remuneraciones')return'b-blue';
+  if(g==='intercompany')return'b-red';
+  if(g==='gasto_operacional')return'b-gray';
+  if(g==='costo_fijo')return'b-green';
+  return'b-gray';
+}
+
+function v4InstallStyles(){
+  if(document.getElementById('v4-modern-styles'))return;
+  const css=`
+  :root{--v4-green:#0f2f25;--v4-green2:#174838;--v4-mint:#e6f4ee;--v4-card:#ffffff;--v4-soft:#f5f7f4;--v4-shadow:0 14px 40px rgba(15,47,37,.08)}
+  .v4-panel{background:linear-gradient(135deg,#0f2f25 0%,#194f3d 100%);color:#fff;border-radius:18px;padding:22px;border:1px solid rgba(255,255,255,.12);box-shadow:var(--v4-shadow);margin-bottom:22px;overflow:hidden;position:relative}
+  .v4-panel:after{content:'';position:absolute;right:-60px;top:-60px;width:180px;height:180px;border-radius:50%;background:rgba(255,255,255,.07)}
+  .v4-panel h3{font-size:18px;letter-spacing:-.03em;margin-bottom:5px}.v4-panel p{font-size:12px;color:rgba(255,255,255,.72);max-width:720px}.v4-panel strong{color:#fff}
+  .v4-quick-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr);gap:16px;margin-bottom:22px}
+  .v4-card{background:var(--bg);border:1px solid var(--bd);border-radius:18px;box-shadow:0 8px 24px rgba(15,15,15,.04);overflow:hidden}
+  .v4-card-pad{padding:18px}.v4-card-title{font-size:14px;font-weight:700;letter-spacing:-.02em}.v4-card-sub{font-size:12px;color:var(--tx-3);margin-top:3px}
+  .v4-expense-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}.v4-expense-amount{font-size:24px;font-weight:800;letter-spacing:-.05em;color:var(--v4-green)}
+  .v4-expense-raw{background:var(--bg-subtle);border:1px solid var(--bd);border-radius:12px;padding:13px;margin-bottom:14px}.v4-expense-raw b{display:block;font-size:12px;margin-bottom:2px}.v4-expense-raw span{font-size:12px;color:var(--tx-2)}
+  .v4-choice-row{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:13px}.v4-choice{border:1px solid var(--bd);background:#fff;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:650;cursor:pointer;transition:.12s}.v4-choice:hover{border-color:var(--v4-green);background:var(--v4-mint)}.v4-choice.active{background:var(--v4-green);color:white;border-color:var(--v4-green)}
+  .v4-cat-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-bottom:14px}.v4-cat{border:1px solid var(--bd);border-radius:12px;padding:9px 10px;background:#fff;cursor:pointer;font-size:12px;font-weight:650;line-height:1.15;min-height:42px;display:flex;align-items:center}.v4-cat:hover{background:var(--bg-subtle);border-color:var(--bd-2)}.v4-cat.active{background:var(--v4-green);border-color:var(--v4-green);color:#fff}
+  .v4-form-grid{display:grid;grid-template-columns:1fr 160px;gap:10px;align-items:end}.v4-form-grid input,.v4-form-grid select{height:38px;border:1px solid var(--bd);border-radius:10px;padding:8px 11px;font:inherit;font-size:13px;background:#fff}.v4-form-grid label{display:block;font-size:11px;color:var(--tx-3);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}.v4-area-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.v4-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}.v4-next-list{display:flex;flex-direction:column;gap:8px}.v4-mini-expense{display:flex;align-items:center;gap:10px;border:1px solid var(--bd);border-radius:12px;padding:10px;background:#fff;cursor:pointer}.v4-mini-expense:hover{background:var(--bg-subtle)}.v4-mini-expense.active{border-color:var(--v4-green);background:var(--v4-mint)}.v4-mini-expense .amt{font-weight:800;color:var(--v4-green);min-width:82px;text-align:right}.v4-mini-expense .txt{font-size:12px;color:var(--tx-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .v4-worker-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.v4-worker-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.v4-worker-col{background:var(--bg);border:1px solid var(--bd);border-radius:18px;overflow:hidden;box-shadow:0 8px 24px rgba(15,15,15,.035)}.v4-worker-col-head{padding:14px 16px;background:var(--bg-subtle);border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center}.v4-worker-col-head b{font-size:13px}.v4-worker-col-head span{font-size:11px;color:var(--tx-3)}.v4-worker-card{padding:14px 16px;border-bottom:1px solid var(--bd)}.v4-worker-card:last-child{border-bottom:0}.v4-worker-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}.v4-worker-name{font-size:14px;font-weight:750;letter-spacing:-.02em}.v4-worker-pay{font-size:11px;color:var(--tx-3);margin-top:2px}.v4-worker-controls{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px}.v4-worker-controls select,.v4-worker-controls input{width:100%;height:32px;border:1px solid var(--bd);border-radius:9px;padding:5px 8px;font-size:12px;background:#fff}.v4-chip-wrap{display:flex;gap:5px;flex-wrap:wrap;align-items:flex-start;max-height:78px;overflow:auto;padding:1px}.v4-chip-wrap .badge{max-width:160px;overflow:hidden;text-overflow:ellipsis}.v4-chip-label{font-size:10px;color:var(--tx-3);font-weight:800;text-transform:uppercase;letter-spacing:.07em;margin:8px 0 5px}.v4-worker-empty{padding:24px 12px;text-align:center;color:var(--tx-3);font-size:12px}
+  .v4-backup-card{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--bg);border:1px solid var(--bd);border-radius:16px;padding:14px 16px;margin-bottom:14px}.v4-backup-card b{font-size:13px}.v4-backup-card span{font-size:11px;color:var(--tx-3)}
+  #worker-list .worker-row,#worker-list .worker-section-title{display:none!important}.modal .tag-list{display:flex!important;flex-wrap:wrap!important;gap:6px!important;max-height:120px;overflow:auto;padding-top:4px}.modal .tag{max-width:100%;white-space:normal;word-break:break-word;line-height:1.25}.modal{width:min(560px,calc(100vw - 32px))}.fg-row{align-items:start}
+  @media(max-width:1100px){.v4-quick-grid{grid-template-columns:1fr}.v4-worker-grid{grid-template-columns:1fr}.v4-cat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.v4-form-grid{grid-template-columns:1fr}.v4-area-row{grid-template-columns:1fr}}
+  `;
+  const st=document.createElement('style');st.id='v4-modern-styles';st.textContent=css;document.head.appendChild(st);
+}
+
+function v4UnmatchedItems(){
+  const items=[];
+  Object.entries(db.months||{}).forEach(([month,d])=>{
+    (d.cartola?.giros||[]).forEach((g,i)=>{
+      const r=classifyCartola(g.desc||'');
+      if(r.cat==='aj_sin')items.push({source:'banco',month,index:i,fecha:g.fecha,raw:g.desc,monto:g.monto,key:`banco_${month}_${i}`});
+    });
+    (d.movimiento?.egresos||[]).forEach((e,i)=>{
+      const r=classifyCaja(e);
+      if(r.cat==='aj_sin')items.push({source:'caja',month,index:i,fecha:e.fecha,raw:e.comentario||'Sin glosa',monto:e.monto,key:`caja_${month}_${i}`});
+    });
+  });
+  return items.sort((a,b)=>String(b.month).localeCompare(String(a.month)) || (b.monto-a.monto));
+}
+let v4QuickState={idx:0,type:'proveedor',cat:'fc_carnes'};
+function v4SetQuick(idx){v4QuickState.idx=idx;v4RenderQuickAssign();}
+function v4SetQuickType(type){v4QuickState.type=type;v4QuickState.cat=(V4_PRIORITY_CATS[type]||[]).find(id=>v4CatById(id)) || (v4SortedCats(type)[0]?._id||v4SortedCats(type)[0]?.id||'op_otros');v4RenderQuickAssign();}
+function v4SetQuickCat(cat){v4QuickState.cat=cat;v4RenderQuickAssign(false);}
+function v4QuickNameFromItem(item,type){
+  const clean=item.source==='banco'?v4CleanBankAlias(item.raw):item.raw;
+  if(type==='trabajador')return v4Title(clean.replace(/pago|turno|propina|sueldo/ig,'').trim()||clean);
+  if(type==='admin')return 'Christopher Müller';
+  return v4Title(clean);
+}
+function v4QuickExistingOptions(type){
+  const ents=(db.entities||[]).filter(e=> type==='trabajador' ? (e.type==='trabajador'||e.type==='admin') : e.type===type);
+  return `<option value="">Crear nuevo</option>`+ents.sort((a,b)=>a.name.localeCompare(b.name,'es')).map(e=>`<option value="${e._id}">${e.name}</option>`).join('');
+}
+function v4RenderQuickAssign(resetName=true){
+  v4InstallStyles();v4EnsureData();
+  const host=document.getElementById('v4-quick-assign');if(!host)return;
+  const items=v4UnmatchedItems();
+  if(!items.length){
+    host.innerHTML=`<div class="v4-panel"><h3>Clasificación rápida</h3><p><strong>Todo está clasificado.</strong> Cuando aparezcan transferencias o movimientos sin asignar, se mostrarán aquí como tarjetas para resolverlos uno por uno.</p></div>`;
+    return;
+  }
+  if(v4QuickState.idx>=items.length)v4QuickState.idx=0;
+  const item=items[v4QuickState.idx];
+  const type=v4QuickState.type||'proveedor';
+  const cats=v4SortedCats(type).slice(0,12);
+  if(!v4QuickState.cat || !cats.find(c=>(c._id||c.id)===v4QuickState.cat))v4QuickState.cat=(cats[0]?._id||cats[0]?.id||'op_otros');
+  const suggested=v4QuickNameFromItem(item,type).replace(/Transferencia A /i,'');
+  const nextItems=items.slice(0,7);
+  host.innerHTML=`
+    <div class="v4-panel"><h3>Clasificación rápida de gastos</h3><p>Resuelve gastos sin clasificar como tarjetas. La app guarda alias y palabras clave para que la próxima transferencia parecida se clasifique sola.</p></div>
+    <div class="v4-quick-grid">
+      <div class="v4-card"><div class="v4-card-pad">
+        <div class="v4-expense-head"><div><div class="v4-card-title">¿A qué pertenece este gasto?</div><div class="v4-card-sub">${mLabel(item.month)} · ${item.source==='banco'?'Cartola banco':'Caja efectivo'} · ${item.fecha||'sin fecha'}</div></div><div class="v4-expense-amount">${fCLP(item.monto)}</div></div>
+        <div class="v4-expense-raw"><b>Texto detectado</b><span>${item.raw||'Sin glosa'}</span></div>
+        <div class="v4-choice-row">${['proveedor','trabajador','admin','intercompany','otro'].map(t=>`<button type="button" class="v4-choice ${type===t?'active':''}" onclick="v4SetQuickType('${t}')">${V4_TYPE_LABELS[t]}</button>`).join('')}</div>
+        <div class="v4-cat-grid">${cats.map(c=>{const id=c._id||c.id;return `<button type="button" class="v4-cat ${id===v4QuickState.cat?'active':''}" onclick="v4SetQuickCat('${id}')">${c.name}</button>`}).join('')}</div>
+        <div class="v4-form-grid">
+          <div><label>Entidad</label><select id="v4-existing-entity" onchange="v4OnExistingChange()">${v4QuickExistingOptions(type)}</select></div>
+          <div><label>Nombre sugerido</label><input id="v4-quick-name" value="${suggested.replace(/"/g,'&quot;')}" onkeydown="if(event.key==='Enter'){event.preventDefault();v4SaveQuickAssign();}"></div>
+        </div>
+        ${(type==='trabajador'||type==='admin')?`<div class="v4-area-row"><div><label style="display:block;font-size:11px;color:var(--tx-3);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:10px 0 5px">Área</label><select id="v4-quick-area" style="width:100%;height:38px;border:1px solid var(--bd);border-radius:10px;padding:8px 11px"><option value="cocina">Cocina</option><option value="caja">Caja</option><option value="administracion" ${type==='admin'?'selected':''}>Administración</option></select></div><div><label style="display:block;font-size:11px;color:var(--tx-3);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:10px 0 5px">Sueldo fijo opcional</label><input id="v4-quick-salary" type="number" value="${type==='admin'?825000:''}" style="width:100%;height:38px;border:1px solid var(--bd);border-radius:10px;padding:8px 11px"></div></div>`:''}
+        <div class="v4-actions"><button class="btn" onclick="v4SkipQuick()">Saltar</button><button class="btn btn-primary" onclick="v4SaveQuickAssign()">Añadir y siguiente →</button></div>
+      </div></div>
+      <div class="v4-card"><div class="v4-card-pad"><div class="v4-card-title">Cola pendiente</div><div class="v4-card-sub">${items.length} movimientos por clasificar</div><div class="v4-next-list" style="margin-top:13px">${nextItems.map((it,i)=>`<div class="v4-mini-expense ${i===v4QuickState.idx?'active':''}" onclick="v4SetQuick(${i})"><div class="amt">${fCLP(it.monto)}</div><div class="txt">${it.raw||'Sin glosa'}</div></div>`).join('')}</div></div></div>
+    </div>`;
+}
+function v4OnExistingChange(){
+  const id=document.getElementById('v4-existing-entity')?.value;
+  const ent=(db.entities||[]).find(e=>e._id===id);
+  if(ent){const input=document.getElementById('v4-quick-name');if(input)input.value=ent.name;}
+}
+function v4SaveQuickAssign(){
+  const items=v4UnmatchedItems();const item=items[v4QuickState.idx];if(!item)return;
+  const type=v4QuickState.type||'proveedor';const cat=v4QuickState.cat||defaultCatForType?.(type)||'op_otros';
+  const existingId=document.getElementById('v4-existing-entity')?.value;
+  const cleanAlias=item.source==='banco'?v4CleanBankAlias(item.raw):String(item.raw||'').trim();
+  const exact=String(item.raw||'').trim();
+  const name=(document.getElementById('v4-quick-name')?.value||cleanAlias||'Sin nombre').trim();
+  let ent=(db.entities||[]).find(e=>e._id===existingId);
+  if(ent){
+    ent.cat=cat;ent.type=type==='admin'?'admin':ent.type;
+    ent.aliases=Array.from(new Set([...(ent.aliases||[]), exact, cleanAlias].filter(Boolean)));
+    if(item.source==='caja')ent.kws=Array.from(new Set([...(ent.kws||[]), cleanAlias].filter(Boolean)));
+    if(type==='trabajador'||type==='admin'){
+      ent.area=document.getElementById('v4-quick-area')?.value||ent.area||'cocina';
+      ent.salary=Number(document.getElementById('v4-quick-salary')?.value)||Number(ent.salary)||0;
+      ent.pay= type==='admin'?'puente':(cat==='rem_propina'?'propina':cat==='rem_turno'?'turno':'sueldo');
+      if(type==='admin'&&!ent.salary)ent.salary=825000;
+    }
+  } else {
+    ent={_id:'e'+Date.now()+'_'+Math.floor(Math.random()*9999),name,type,cat,aliases:[],kws:[]};
+    if(item.source==='banco')ent.aliases=Array.from(new Set([exact,cleanAlias].filter(Boolean)));
+    else ent.kws=Array.from(new Set([cleanAlias, v4Norm(cleanAlias)].filter(Boolean)));
+    if(type==='trabajador'||type==='admin'){
+      ent.area=document.getElementById('v4-quick-area')?.value||(type==='admin'?'administracion':'cocina');
+      ent.salary=Number(document.getElementById('v4-quick-salary')?.value)||0;
+      ent.pay= type==='admin'?'puente':(cat==='rem_propina'?'propina':cat==='rem_turno'?'turno':'sueldo');
+      if(type==='admin'&&!ent.salary)ent.salary=825000;
+    }
+    db.entities.push(ent);
+  }
+  v4EnsureData();saveDB();
+  v4QuickState.idx=0;
+  renderEntityPage('proveedor');
+}
+function v4SkipQuick(){const items=v4UnmatchedItems();if(!items.length)return;v4QuickState.idx=(v4QuickState.idx+1)%items.length;v4RenderQuickAssign();}
+
+function v4InsertQuickHost(){
+  const page=document.querySelector('#page-proveedores .content');if(!page)return;
+  if(!document.getElementById('v4-quick-assign')){
+    const host=document.createElement('div');host.id='v4-quick-assign';page.insertBefore(host,page.firstChild);
+  }
+  v4RenderQuickAssign();
+}
+
+function v4UpdateWorker(id,field,val){
+  const ent=(db.entities||[]).find(e=>e._id===id);if(!ent)return;
+  if(field==='salary')ent.salary=Number(val)||0;
+  else ent[field]=val;
+  if(field==='area' && ent.type==='admin')ent.area='administracion';
+  saveDB();renderEntityPage('trabajador');
+}
+function v4AddWorkerInline(area){openEntityModal(null,'trabajador');setTimeout(()=>{document.getElementById('em-area').value=area;},0)}
+function v4RenderWorkerBoard(){
+  v4InstallStyles();v4EnsureData();
+  const host=document.getElementById('worker-list');if(!host)return;
+  const entities=(db.entities||[]).filter(e=>e.type==='trabajador'||e.type==='admin');
+  const totals=V4_AREA_ORDER.reduce((acc,a)=>{acc[a]=entities.filter(e=>(e.area||'cocina')===a).length;return acc;},{});
+  const cols=V4_AREA_ORDER.map(area=>{
+    const items=entities.filter(e=>(e.area||'cocina')===area).sort((a,b)=>a.name.localeCompare(b.name,'es'));
+    return `<div class="v4-worker-col"><div class="v4-worker-col-head"><div><b>${V4_AREA_LABELS[area]}</b><br><span>${totals[area]} persona${totals[area]===1?'':'s'}</span></div><button class="btn btn-sm" onclick="v4AddWorkerInline('${area}')">+ Añadir</button></div>${items.length?items.map(ent=>{
+      const catOptions=v4SortedCats(ent.type==='admin'?'admin':'trabajador').map(c=>{const id=c._id||c.id;return `<option value="${id}" ${id===ent.cat?'selected':''}>${c.name}</option>`}).join('');
+      return `<div class="v4-worker-card"><div class="v4-worker-top"><div><div class="v4-worker-name">${ent.name}</div><div class="v4-worker-pay">${ent.type==='admin'?'Admin · cuenta puente':(PAY_LABELS[ent.pay]||'Trabajador')}${Number(ent.salary)?` · ${fCLP(ent.salary)}/mes`:''}</div></div><div style="display:flex;gap:4px"><button class="btn-icon" onclick="openEntityModal('${ent._id}')"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 2.5l2 2L4 12H2v-2L9.5 2.5z"/></svg></button><button class="btn-icon danger" onclick="deleteEntity('${ent._id}')"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h10M5 3V2h4v1M4 3v8h6V3"/></svg></button></div></div><div class="v4-worker-controls"><select onchange="v4UpdateWorker('${ent._id}','area',this.value)" ${ent.type==='admin'?'disabled':''}><option value="cocina" ${area==='cocina'?'selected':''}>Cocina</option><option value="caja" ${area==='caja'?'selected':''}>Caja</option><option value="administracion" ${area==='administracion'?'selected':''}>Administración</option></select><select onchange="v4UpdateWorker('${ent._id}','cat',this.value)">${catOptions}</select></div><div class="v4-worker-controls"><input type="number" value="${Number(ent.salary)||''}" placeholder="Sueldo fijo" onchange="v4UpdateWorker('${ent._id}','salary',this.value)"><select onchange="v4UpdateWorker('${ent._id}','pay',this.value)"><option value="sueldo" ${ent.pay==='sueldo'?'selected':''}>Sueldo</option><option value="turno" ${ent.pay==='turno'?'selected':''}>Turno</option><option value="propina" ${ent.pay==='propina'?'selected':''}>Propina</option><option value="puente" ${ent.pay==='puente'?'selected':''}>Cuenta puente</option></select></div><div class="v4-chip-label">Alias cartola</div><div class="v4-chip-wrap">${(ent.aliases||[]).map(a=>`<span class="badge b-gray">${a}</span>`).join('')||'<span class="tm">Sin alias</span>'}</div><div class="v4-chip-label">Palabras clave caja</div><div class="v4-chip-wrap">${(ent.kws||[]).map(k=>`<span class="badge b-blue">${k}</span>`).join('')||'<span class="tm">Sin palabras</span>'}</div></div>`;
+    }).join(''):`<div class="v4-worker-empty">Sin personas asignadas a ${V4_AREA_LABELS[area].toLowerCase()}</div>`}</div>`;
+  }).join('');
+  host.innerHTML=`<div class="v4-worker-toolbar"><div><div class="v4-card-title">Equipo por sección</div><div class="v4-card-sub">Cambia área, categoría y sueldo fijo sin abrir formularios largos. Esto ayuda a clasificar transferencias automáticamente.</div></div><button class="btn btn-primary" onclick="openEntityModal(null,'trabajador')">+ Nuevo trabajador</button></div><div class="v4-worker-grid">${cols}</div>`;
+}
+
+const _v4RenderEntityPage=renderEntityPage;
+renderEntityPage=function(type){
+  v4InstallStyles();v4EnsureData();
+  if(type==='trabajador'){v4RenderWorkerBoard();return;}
+  _v4RenderEntityPage(type);
+  if(type==='proveedor')v4InsertQuickHost();
+};
+
+const _v4PopulateCatSel=populateCatSel;
+populateCatSel=function(id,sel,type){
+  const el=document.getElementById(id);if(!el)return;
+  const t=type||document.getElementById('em-type')?.value||'proveedor';
+  const cats=v4SortedCats(t);
+  const selected=sel || (V4_PRIORITY_CATS[t]||[]).find(cid=>cats.some(c=>(c._id||c.id)===cid)) || (cats[0]?._id||cats[0]?.id||'');
+  el.innerHTML=cats.map(c=>{const cid=c._id||c.id;return `<option value="${cid}" ${cid===selected?'selected':''}>${c.name}</option>`}).join('');
+};
+
+const _v4OpenEntityModal=openEntityModal;
+openEntityModal=function(id,defaultType){
+  _v4OpenEntityModal(id,defaultType);
+  const ent=id?(db.entities||[]).find(e=>e._id===id):null;
+  const type=ent?ent.type:(defaultType||'proveedor');
+  const typeSelect=document.getElementById('em-type');
+  if(typeSelect){typeSelect.setAttribute('onchange','onEntityTypeChange(this.value)');}
+  if(typeof onEntityTypeChange==='function')onEntityTypeChange(type);
+  populateCatSel('em-cat',ent?ent.cat:'',type);
+  if(type==='trabajador'||type==='admin'){
+    document.getElementById('em-area').value=ent?(ent.area||'cocina'):(type==='admin'?'administracion':'cocina');
+    document.getElementById('em-salary').value=ent?(Number(ent.salary)||''):(type==='admin'?825000:'');
+  }
+};
+
+const _v4AddAlias=addAlias;
+addAlias=function(){const inp=document.getElementById('em-alias-in');const v=inp?.value.trim();if(v&&!tmpAliases.includes(v)){tmpAliases.push(v);}if(inp)inp.value='';renderTags();};
+const _v4AddKw=addKw;
+addKw=function(){const inp=document.getElementById('em-kw-in');const v=inp?.value.trim();if(v&&!tmpKws.includes(v)){tmpKws.push(v);}if(inp)inp.value='';renderTags();};
+const _v4RenderTags=renderTags;
+renderTags=function(){
+  _v4RenderTags();
+  ['em-alias-in','em-kw-in'].forEach(id=>{const el=document.getElementById(id);if(el&&!el.dataset.v4Enter){el.dataset.v4Enter='1';el.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();id==='em-alias-in'?addAlias():addKw();}});}});
+};
+
+const _v4RenderHistory=renderHistory;
+renderHistory=function(){
+  _v4RenderHistory();
+  const content=document.querySelector('#page-upload .content');
+  if(content && !document.getElementById('v4-backup-card')){
+    const last=db._meta?.lastSavedAt?new Date(db._meta.lastSavedAt).toLocaleString('es-CL'):'sin registro';
+    const card=document.createElement('div');card.id='v4-backup-card';card.className='v4-backup-card';card.innerHTML=`<div><b>Respaldo SaaS local</b><br><span>Último guardado: ${last}. Exporta este JSON para conservar proveedores, trabajadores, categorías, divisiones y meses cargados.</span></div><button class="btn btn-primary" onclick="exportData()">Exportar respaldo</button>`;
+    const hist=document.getElementById('history');content.insertBefore(card,hist||content.firstChild);
+  }
+};
+
+v4InstallStyles();
+v4EnsureData();
+
 // ── INIT ──
 loadDB();
 nav('dashboard');
+setupAliasEnterHandlers();
 document.getElementById('drop-zone').addEventListener('dragover',e=>e.preventDefault());
 document.getElementById('drop-zone').addEventListener('drop',e=>{e.preventDefault();handleFiles(e.dataTransfer.files);});
 </script>
