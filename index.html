@@ -6678,5 +6678,102 @@ document.getElementById('drop-zone').addEventListener('drop',e=>{e.preventDefaul
 })();
 </script>
 
+
+
+<script>
+/* V15 — Botón Clasificar abre transacciones, no listado de proveedores */
+(function(){
+  function openReview(){
+    window.v8ProvFilter='revisar';
+    window.v12ProvFilter='revisar';
+    window.v13ProvFilter='revisar';
+    if(typeof nav==='function') nav('proveedores');
+    setTimeout(function(){
+      try{
+        window.v8ProvFilter='revisar';
+        window.v12ProvFilter='revisar';
+        window.v13ProvFilter='revisar';
+        if(typeof renderEntityPage==='function') renderEntityPage('proveedor');
+        markReviewFilter();
+      }catch(e){console.warn('v15 open review',e)}
+    },0);
+  }
+  window.v15OpenReview=openReview;
+
+  function markReviewFilter(){
+    var pf=document.getElementById('prov-filters');
+    if(!pf)return;
+    Array.from(pf.querySelectorAll('.fp')).forEach(function(x){x.classList.remove('active')});
+    var btn=Array.from(pf.querySelectorAll('.fp')).find(function(x){return /Revisar|Clasificar/i.test(x.textContent||'')});
+    if(btn)btn.classList.add('active');
+  }
+
+  function patchClassifyButtons(){
+    // Dashboard alert: antes llevaba solo a Proveedores; ahora abre la cola de transacciones.
+    Array.from(document.querySelectorAll('button,.btn,.nav-item,span.fp')).forEach(function(el){
+      var txt=(el.textContent||'').trim();
+      if(/^Clasificar\s*→?$|^Revisar\s*→?$/i.test(txt) || /transferencias sin clasificar/i.test((el.parentElement&&el.parentElement.textContent)||'')){
+        if(el.tagName==='BUTTON' || el.classList.contains('btn')){
+          el.onclick=function(ev){ev.preventDefault();openReview();};
+        }
+      }
+    });
+    var dashBtn=document.querySelector('#dash-alert button');
+    if(dashBtn){dashBtn.textContent='Clasificar transferencias →';dashBtn.onclick=function(ev){ev.preventDefault();openReview();};}
+  }
+
+  // Reemplaza cualquier implementación previa de filtro para que "Revisar" sea una cola real.
+  var oldRender=window.renderEntityPage;
+  window.renderEntityPage=function(type){
+    var filter=window.v13ProvFilter||window.v12ProvFilter||window.v8ProvFilter||'';
+    if(type==='proveedor' && filter==='revisar'){
+      // Si existe el render optimizado v14, úsalo llamando al render anterior ya parcheado por v14.
+      if(oldRender){
+        var r=oldRender.apply(this,arguments);
+        markReviewFilter();
+        return r;
+      }
+    }
+    var res=oldRender?oldRender.apply(this,arguments):undefined;
+    patchClassifyButtons();
+    return res;
+  };
+
+  var oldNav=window.nav;
+  if(oldNav){
+    window.nav=function(page){
+      var res=oldNav.apply(this,arguments);
+      setTimeout(function(){
+        patchClassifyButtons();
+        if(page==='proveedores' && (window.v13ProvFilter||window.v12ProvFilter||window.v8ProvFilter)==='revisar') markReviewFilter();
+      },0);
+      return res;
+    };
+  }
+
+  var oldDash=window.renderDash;
+  if(oldDash){
+    window.renderDash=function(){
+      var res=oldDash.apply(this,arguments);
+      setTimeout(patchClassifyButtons,0);
+      return res;
+    };
+  }
+
+  // Mejorar texto del filtro: "Revisar" puede confundirse; lo dejamos explícito.
+  function renameReviewFilter(){
+    var pf=document.getElementById('prov-filters');
+    if(!pf)return;
+    Array.from(pf.querySelectorAll('.fp')).forEach(function(x){
+      if(/^Revisar$/i.test((x.textContent||'').trim())) x.textContent='Clasificar';
+      if(/Clasificar/i.test(x.textContent||'')) x.onclick=function(){window.v8ProvFilter='revisar';window.v12ProvFilter='revisar';window.v13ProvFilter='revisar';if(typeof renderEntityPage==='function')renderEntityPage('proveedor');};
+    });
+  }
+
+  setInterval(function(){patchClassifyButtons();renameReviewFilter();},800);
+  setTimeout(function(){patchClassifyButtons();renameReviewFilter();},0);
+})();
+</script>
+
 </body>
 </html>
