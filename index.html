@@ -6452,5 +6452,231 @@ document.getElementById('drop-zone').addEventListener('drop',e=>{e.preventDefaul
 })();
 </script>
 
+
+<script>
+/* V14 — Clasificación rápida optimizada: evita congelamientos en "Revisar" */
+(function(){
+  const $=(sel,root=document)=>root.querySelector(sel);
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const clean=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const canon=window.canon || (id=>id||'aj_sin');
+  const catName=id=>typeof getCatName==='function'?getCatName(canon(id)):canon(id);
+  const fmoney=n=>typeof fCLP==='function'?fCLP(n):('$ '+Math.round(Number(n)||0).toLocaleString('es-CL'));
+  const monthLabel=m=>typeof mLabel==='function'?mLabel(m):m;
+
+  const V14_CAT_BUCKETS=[
+    ['Comida / insumos',[['fc_carnes','Carnes'],['fc_pollo','Pollo'],['fc_pan','Pan'],['fc_lacteos','Lácteos'],['fc_verduras','Verduras'],['fc_papas','Papas'],['fc_aceite','Aceite'],['fc_abarrotes','Abarrotes'],['fc_salsas','Salsas'],['fc_bebidas','Bebidas']]],
+    ['Fijos',[['fix_arriendo','Arriendo'],['fix_luz','Luz'],['fix_agua','Agua'],['fix_internet','Internet'],['fix_contabilidad','Contabilidad'],['fix_software','Software']]],
+    ['Operación',[['op_packaging','Packaging'],['op_aseo','Aseo'],['op_mantencion','Mantención'],['op_reparaciones','Reparaciones'],['delivery_propio','Delivery']]],
+    ['Marketing y admin',[['mk_marketing','Marketing'],['mk_diseno','Diseño / imprenta'],['adm_admin','Gastos administrativos'],['adm_cuenta_puente','Cuenta puente'],['adm_compra_tercero','Compra por tercero'],['aj_sin','Sin clasificar']]]
+  ];
+  const QUICK_CATS=V14_CAT_BUCKETS.flatMap(([,arr])=>arr.map(([id,label])=>({id,label,bucket:V14_CAT_BUCKETS.find(x=>x[1]===arr)?.[0]||''})));
+
+  function fastCategory(raw){
+    const t=clean(raw);
+    if(/cge|luz|electricidad/.test(t))return 'fix_luz';
+    if(/agua|aguas del altiplano/.test(t))return 'fix_agua';
+    if(/movistar|internet|telefono|wifi|telefonia/.test(t))return 'fix_internet';
+    if(/ewald|arriendo/.test(t))return 'fix_arriendo';
+    if(/brios|spice|marketing|publicidad|meta|facebook|instagram|google ads/.test(t))return 'mk_marketing';
+    if(/deliverit|packaging|caja|cajas|vaso|vasos|bolsa|servilleta|papel/.test(t))return 'op_packaging';
+    if(/javier|delivery|deli\b|repart|despacho/.test(t))return 'delivery_propio';
+    if(/carne|carnes|aranguiz|sudamericanas|frigorifico|frigorificos|hugo cochi|fernando marquez/.test(t))return 'fc_carnes';
+    if(/pollo/.test(t))return 'fc_pollo';
+    if(/pan|panader/.test(t))return 'fc_pan';
+    if(/queso|lacteo|lacteos|leche|cheddar|mozzarella/.test(t))return 'fc_lacteos';
+    if(/verdura|lechuga|tomate|cebolla|palta|repollo|vegetal/.test(t))return 'fc_verduras';
+    if(/papa|minuto verde|papas/.test(t))return 'fc_papas';
+    if(/aceite|yimk|covadonga/.test(t))return 'fc_aceite';
+    if(/bebida|coca|embotelladora|sprite|agua mineral/.test(t))return 'fc_bebidas';
+    if(/aseo|limpieza|detergente|cloro|desinfectante/.test(t))return 'op_aseo';
+    if(/copec|icb/.test(t))return 'adm_compra_tercero';
+    return 'aj_sin';
+  }
+
+  function entityMatched(raw){
+    const t=clean(raw);
+    if(!t)return null;
+    const ents=(db.entities||[]);
+    for(const e of ents){
+      for(const a of (e.aliases||[])){
+        const aa=clean(a);
+        if(aa && t.includes(aa))return e;
+      }
+      for(const k of (e.kws||[])){
+        const kk=clean(k);
+        if(kk && t.includes(kk))return e;
+      }
+    }
+    return null;
+  }
+
+  let v14State={idx:0,monthMode:'active',cat:'fc_carnes',type:'proveedor',lastKey:'',cacheKey:'',cache:[]};
+  window.v14State=v14State;
+
+  function makeCacheKey(){
+    const months=Object.keys(db.months||{}).sort();
+    const counts=months.map(m=>{const d=db.months[m]||{};return `${m}:${(d.cartola?.giros||[]).length}/${(d.movimiento?.egresos||[]).length}`}).join('|');
+    const ents=(db.entities||[]).map(e=>`${e._id}:${e.cat}:${(e.aliases||[]).length}:${(e.kws||[]).length}`).join('|');
+    return `${activeMonth||''}|${v14State.monthMode}|${counts}|${ents}`;
+  }
+
+  function collectFastItems(){
+    const key=makeCacheKey();
+    if(v14State.cacheKey===key)return v14State.cache;
+    const months=Object.keys(db.months||{}).sort().reverse();
+    const selected=v14State.monthMode==='all'?months:(activeMonth&&db.months[activeMonth]?[activeMonth]:months.slice(0,1));
+    const out=[];
+    const MAX_SCAN=3500; let scanned=0;
+    for(const month of selected){
+      const d=db.months[month]||{};
+      const giros=d.cartola?.giros||[];
+      for(let i=0;i<giros.length&&scanned<MAX_SCAN;i++,scanned++){
+        const g=giros[i]; const raw=g.desc||''; const suggested=fastCategory(raw);
+        if(!entityMatched(raw) || suggested==='aj_sin'){
+          out.push({source:'banco',month,index:i,fecha:g.fecha||'',raw,monto:Number(g.monto)||0,key:`banco_${month}_${i}`,suggested});
+        }
+        if(out.length>=250)break;
+      }
+      const eg=d.movimiento?.egresos||[];
+      for(let i=0;i<eg.length&&scanned<MAX_SCAN;i++,scanned++){
+        const e=eg[i]; const raw=e.comentario||'Sin glosa'; const suggested=fastCategory(raw);
+        if(!entityMatched(raw) || suggested==='aj_sin'){
+          out.push({source:'caja',month,index:i,fecha:e.fecha||'',raw,monto:Number(e.monto)||0,key:`caja_${month}_${i}`,suggested});
+        }
+        if(out.length>=250)break;
+      }
+      if(out.length>=250||scanned>=MAX_SCAN)break;
+    }
+    out.sort((a,b)=>String(b.month).localeCompare(String(a.month))||b.monto-a.monto);
+    v14State.cacheKey=key; v14State.cache=out;
+    return out;
+  }
+
+  function titleFromRaw(raw){
+    let s=String(raw||'').replace(/^transferencia\s+(a|de)\s+/i,'').replace(/^pago\s+(a|de)\s+/i,'').trim();
+    s=s.replace(/\s+/g,' ');
+    return s.split(' ').filter(Boolean).slice(0,5).map(w=>w.length<4?w.toUpperCase():w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ') || 'Nuevo proveedor';
+  }
+
+  function optionsForType(type){
+    const ents=(db.entities||[]).filter(e=>{
+      if(type==='trabajador')return e.type==='trabajador';
+      if(type==='admin')return e.type==='admin';
+      if(type==='servicio')return e.type==='servicio'||e.type==='proveedor';
+      return ['proveedor','servicio','admin','intercompany','otro'].includes(e.type||'proveedor');
+    }).sort((a,b)=>String(a.name).localeCompare(String(b.name),'es'));
+    return '<option value="">Crear nuevo</option>'+ents.slice(0,160).map(e=>`<option value="${esc(e._id)}">${esc(e.name)}</option>`).join('');
+  }
+
+  function catButtons(selected){
+    return V14_CAT_BUCKETS.map(([bucket,cats])=>`<div class="v14-cat-group"><div>${esc(bucket)}</div><section>${cats.map(([id,label])=>`<button type="button" class="${canon(id)===canon(selected)?'active':''}" onclick="v14SetCat('${esc(id)}')">${esc(label)}</button>`).join('')}</section></div>`).join('');
+  }
+
+  window.v14SetCat=function(cat){v14State.cat=cat; renderReview(true);};
+  window.v14SetType=function(type){v14State.type=type; renderReview(true);};
+  window.v14SetIdx=function(i){v14State.idx=Number(i)||0; renderReview(true);};
+  window.v14ToggleMonth=function(mode){v14State.monthMode=mode; v14State.idx=0; v14State.cacheKey=''; renderReview();};
+
+  window.v14Save=function(){
+    const items=collectFastItems(); const item=items[v14State.idx]; if(!item)return;
+    const existing=$('#v14-existing')?.value||'';
+    const type=$('#v14-type')?.value||v14State.type||'proveedor';
+    const cat=canon(v14State.cat||item.suggested||'aj_sin');
+    const name=($('#v14-name')?.value||titleFromRaw(item.raw)).trim();
+    const exact=String(item.raw||'').trim(); const cleaned=titleFromRaw(item.raw);
+    let ent=(db.entities||[]).find(e=>e._id===existing);
+    if(ent){
+      ent.type=type==='servicio'?'servicio':(ent.type||type);
+      ent.cat=cat;
+      if(item.source==='banco')ent.aliases=Array.from(new Set([...(ent.aliases||[]), exact, cleaned].filter(Boolean)));
+      else ent.kws=Array.from(new Set([...(ent.kws||[]), exact, clean(exact)].filter(Boolean)));
+    }else{
+      ent={_id:'e'+Date.now()+'_'+Math.floor(Math.random()*9999),name,type,cat,aliases:[],kws:[]};
+      if(type==='admin'){ent.area='administracion';ent.team='fijo';ent.pay='puente';}
+      if(type==='trabajador'){ent.area='cocina';ent.team='fijo';ent.pay='sueldo';}
+      if(item.source==='banco')ent.aliases=Array.from(new Set([exact, cleaned].filter(Boolean)));
+      else ent.kws=Array.from(new Set([exact, clean(exact)].filter(Boolean)));
+      db.entities=db.entities||[]; db.entities.push(ent);
+    }
+    if(typeof saveDB==='function')saveDB();
+    v14State.cacheKey=''; v14State.idx=0;
+    renderReview();
+  };
+
+  window.v14Skip=function(){const items=collectFastItems(); if(!items.length)return; v14State.idx=(v14State.idx+1)%items.length; renderReview(true);};
+
+  function renderReview(preserveName=false){
+    const host=$('#prov-list'); if(!host)return;
+    const items=collectFastItems();
+    const count=items.length;
+    if(!count){
+      host.innerHTML=`<div class="v14-review-empty"><b>Todo clasificado</b><span>No hay transferencias pendientes en ${v14State.monthMode==='all'?'todos los meses':'el mes activo'}.</span></div>`;
+      return;
+    }
+    if(v14State.idx>=count)v14State.idx=0;
+    const item=items[v14State.idx];
+    if(!v14State.cat || v14State.lastKey!==item.key)v14State.cat=item.suggested||'fc_carnes';
+    v14State.lastKey=item.key;
+    const suggestedName=titleFromRaw(item.raw);
+    const queue=items.slice(0,18);
+    const modeLabel=v14State.monthMode==='all'?'Todos los meses':'Mes activo';
+    host.innerHTML=`
+      <div class="v14-review-head">
+        <div><b>Revisar transferencias</b><span>${count} pendientes · ${modeLabel}</span></div>
+        <div class="v14-seg"><button class="${v14State.monthMode==='active'?'active':''}" onclick="v14ToggleMonth('active')">Mes activo</button><button class="${v14State.monthMode==='all'?'active':''}" onclick="v14ToggleMonth('all')">Todos</button></div>
+      </div>
+      <div class="v14-review-grid">
+        <section class="v14-review-main">
+          <div class="v14-exp-top"><div><small>${esc(monthLabel(item.month))} · ${item.source==='banco'?'Banco':'Caja'} · ${esc(item.fecha||'sin fecha')}</small><h3>${esc(item.raw||'Sin glosa')}</h3></div><strong>${fmoney(item.monto)}</strong></div>
+          <div class="v14-formline"><label>Tipo</label><select id="v14-type" onchange="v14SetType(this.value)"><option value="proveedor" ${v14State.type==='proveedor'?'selected':''}>Proveedor</option><option value="servicio" ${v14State.type==='servicio'?'selected':''}>Servicio / gasto fijo</option><option value="admin" ${v14State.type==='admin'?'selected':''}>Cuenta puente</option><option value="trabajador" ${v14State.type==='trabajador'?'selected':''}>Trabajador</option><option value="otro" ${v14State.type==='otro'?'selected':''}>Otro</option></select></div>
+          <div class="v14-formline"><label>Entidad</label><select id="v14-existing">${optionsForType(v14State.type)}</select></div>
+          <div class="v14-formline"><label>Nombre</label><input id="v14-name" value="${esc(suggestedName)}" onkeydown="if(event.key==='Enter'){event.preventDefault();v14Save();}"></div>
+          <div class="v14-cats">${catButtons(v14State.cat)}</div>
+          <div class="v14-actions"><button class="btn" onclick="v14Skip()">Saltar</button><button class="btn btn-primary" onclick="v14Save()">Guardar y siguiente</button></div>
+        </section>
+        <aside class="v14-queue">${queue.map((q,i)=>`<button class="${i===v14State.idx?'active':''}" onclick="v14SetIdx(${i})"><b>${fmoney(q.monto)}</b><span>${esc(q.raw||'Sin glosa')}</span></button>`).join('')}</aside>
+      </div>`;
+  }
+
+  function installV14Styles(){
+    if($('#v14-styles'))return;
+    const st=document.createElement('style'); st.id='v14-styles'; st.textContent=`
+      #v4-quick-assign{display:none!important}.v14-review-empty{padding:34px 0;border-top:1px solid var(--bd);border-bottom:1px solid var(--bd);display:flex;flex-direction:column;gap:4px}.v14-review-empty b{font-size:16px}.v14-review-empty span{font-size:12px;color:var(--tx-3)}
+      .v14-review-head{display:flex;justify-content:space-between;align-items:center;margin:6px 0 18px}.v14-review-head b{display:block;font-size:18px;letter-spacing:-.03em}.v14-review-head span{display:block;font-size:12px;color:var(--tx-3);margin-top:2px}.v14-seg{display:flex;background:#eef1ec;border-radius:999px;padding:3px}.v14-seg button{border:0;background:transparent;border-radius:999px;padding:7px 11px;font-size:12px;font-weight:700;cursor:pointer}.v14-seg button.active{background:#0f3d2e;color:#fff}
+      .v14-review-grid{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:22px}.v14-review-main{min-width:0}.v14-exp-top{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;border-bottom:1px solid var(--bd);padding-bottom:16px;margin-bottom:14px}.v14-exp-top small{font-size:11px;color:var(--tx-3);font-weight:700;text-transform:uppercase;letter-spacing:.06em}.v14-exp-top h3{font-size:17px;letter-spacing:-.03em;margin:5px 0 0;line-height:1.25}.v14-exp-top strong{font-size:24px;color:#0f3d2e;white-space:nowrap;letter-spacing:-.04em}.v14-formline{display:grid;grid-template-columns:100px 1fr;align-items:center;gap:12px;margin:10px 0}.v14-formline label{font-size:11px;color:var(--tx-3);font-weight:800;text-transform:uppercase;letter-spacing:.07em}.v14-formline input,.v14-formline select{height:38px;border:1px solid var(--bd);border-radius:10px;background:#fff;padding:8px 11px;font:inherit;font-size:13px}.v14-cats{margin-top:18px}.v14-cat-group{margin:16px 0}.v14-cat-group>div{font-size:10px;font-weight:850;text-transform:uppercase;letter-spacing:.1em;color:#9a9a9a;margin-bottom:8px}.v14-cat-group section{display:flex;flex-wrap:wrap;gap:7px}.v14-cat-group button{border:1px solid var(--bd);background:#fff;border-radius:999px;padding:7px 10px;font-size:12px;font-weight:700;cursor:pointer}.v14-cat-group button.active{background:#0f3d2e;color:#fff;border-color:#0f3d2e}.v14-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;padding-top:16px;border-top:1px solid var(--bd)}
+      .v14-queue{display:flex;flex-direction:column;gap:7px;max-height:620px;overflow:auto;padding-right:3px}.v14-queue button{border:1px solid var(--bd);background:#fff;text-align:left;border-radius:12px;padding:10px;cursor:pointer}.v14-queue button.active{border-color:#0f3d2e;background:#eef8f2}.v14-queue b{display:block;color:#0f3d2e;font-size:13px}.v14-queue span{display:block;color:var(--tx-2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+      @media(max-width:980px){.v14-review-grid{grid-template-columns:1fr}.v14-queue{max-height:240px}.v14-formline{grid-template-columns:1fr;gap:5px}}
+    `; document.head.appendChild(st);
+  }
+
+  const prevRender=window.renderEntityPage||renderEntityPage;
+  window.renderEntityPage=renderEntityPage=function(type){
+    installV14Styles();
+    if(type==='proveedor'){
+      const f=window.v13ProvFilter||window.v12ProvFilter||window.v8ProvFilter||'todos';
+      if(f==='revisar'){
+        const pf=$('#prov-filters');
+        if(pf){
+          Array.from(pf.querySelectorAll('.fp')).forEach(x=>x.classList.remove('active'));
+          const btn=Array.from(pf.querySelectorAll('.fp')).find(x=>/Revisar/i.test(x.textContent||''));
+          if(btn)btn.classList.add('active');
+        }
+        const unmatched=$('#prov-unmatched'); if(unmatched)unmatched.style.display='none';
+        renderReview();
+        return;
+      }
+    }
+    return prevRender(type);
+  };
+
+  window.v4UnmatchedItems=function(){return collectFastItems();};
+  window.v4RenderQuickAssign=function(){installV14Styles(); const h=$('#v4-quick-assign'); if(h)h.innerHTML='';};
+  window.v8SetProvFilter=function(f){window.v8ProvFilter=f;window.v12ProvFilter=f;window.v13ProvFilter=f;renderEntityPage('proveedor');};
+  window.v13SetProvFilter=function(f){window.v8ProvFilter=f;window.v12ProvFilter=f;window.v13ProvFilter=f;renderEntityPage('proveedor');};
+  installV14Styles();
+})();
+</script>
+
 </body>
 </html>
