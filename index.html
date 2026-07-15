@@ -7034,5 +7034,511 @@ document.getElementById('drop-zone').addEventListener('drop',e=>{e.preventDefaul
 })();
 </script>
 
+
+
+<script>
+/* V17 - Empresas, reporte PDF/print, flujo real y conciliación limpia */
+(function(){
+  const $=(s,r=document)=>r.querySelector(s);
+  const $$=(s,r=document)=>Array.from(r.querySelectorAll(s));
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const clean=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const money=n=>typeof fCLP==='function'?fCLP(n):('$ '+Math.round(Number(n)||0).toLocaleString('es-CL'));
+  const monthName=m=>typeof mLabel==='function'?mLabel(m):String(m||'');
+
+  const COMPANY_INFO={
+    streetflags:{name:'Street Flags',short:'Street'},
+    mafia:{name:'Mafia',short:'Mafia'}
+  };
+
+  function ensureCompanies(){
+    db.companies=db.companies||{};
+    const oldMonths=db.months&&Object.keys(db.months).length?db.months:null;
+    if(!db.companies.streetflags)db.companies.streetflags={name:'Street Flags',months:{}};
+    if(!db.companies.mafia)db.companies.mafia={name:'Mafia',months:{}};
+    if(oldMonths && !db._v17MigratedCompanies){
+      db.companies.streetflags.months=oldMonths;
+      db._v17MigratedCompanies=true;
+    }
+    db.activeCompany=db.activeCompany||'streetflags';
+    if(!db.companies[db.activeCompany])db.activeCompany='streetflags';
+    db.months=db.companies[db.activeCompany].months||{};
+    db.companies[db.activeCompany].months=db.months;
+  }
+  function syncCompany(){
+    db.companies=db.companies||{};
+    db.activeCompany=db.activeCompany||'streetflags';
+    if(!db.companies[db.activeCompany])db.companies[db.activeCompany]={name:COMPANY_INFO[db.activeCompany]?.name||db.activeCompany,months:{}};
+    db.companies[db.activeCompany].months=db.months||{};
+  }
+  ensureCompanies();
+  const oldSave=window.saveDB;
+  window.saveDB=saveDB=function(){syncCompany(); if(oldSave)return oldSave(); localStorage.setItem('sf_v6',JSON.stringify(db));};
+
+  window.v17SetCompany=function(id){
+    if(!COMPANY_INFO[id])return;
+    syncCompany();
+    db.activeCompany=id;
+    db.companies[id]=db.companies[id]||{name:COMPANY_INFO[id].name,months:{}};
+    db.months=db.companies[id].months||{};
+    db.companies[id].months=db.months;
+    const months=Object.keys(db.months||{}).sort();
+    activeMonth=months.length?months[months.length-1]:null;
+    saveDB();
+    renderCompanySwitcher();
+    if(typeof nav==='function')nav(document.querySelector('.page.active')?.id?.replace('page-','')||'dashboard');
+  };
+
+  function renderCompanySwitcher(){
+    let box=$('#v17-company-switch');
+    if(!box){
+      const logo=$('.sb-logo')||$('#sidebar');
+      box=document.createElement('div');box.id='v17-company-switch';box.className='v17-company-switch';
+      if(logo&&logo.parentNode)logo.parentNode.insertBefore(box,logo.nextSibling);
+    }
+    box.innerHTML=`<button class="${db.activeCompany==='streetflags'?'active':''}" onclick="v17SetCompany('streetflags')">Street</button><button class="${db.activeCompany==='mafia'?'active':''}" onclick="v17SetCompany('mafia')">Mafia</button>`;
+  }
+
+  function installReportButton(){
+    const sb=$('.sb-bottom'); if(!sb || $('#v17-report-btn'))return;
+    const btn=document.createElement('div');
+    btn.id='v17-report-btn';btn.className='nav-item';btn.style.color='var(--tx-2)';
+    btn.innerHTML='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2h6l2 2v10H4z"/><path d="M10 2v3h3"/><path d="M6 8h4M6 11h4"/></svg> Reporte PDF';
+    btn.onclick=function(){v17OpenReport();};
+    sb.insertBefore(btn,sb.firstChild);
+  }
+
+  function installStyles(){
+    if($('#v17-styles'))return;
+    const st=document.createElement('style');st.id='v17-styles';st.textContent=`
+      .v17-company-switch{padding:10px 10px 8px;border-bottom:1px solid var(--bd);display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--bg)}
+      .v17-company-switch button{border:1px solid var(--bd);background:#fff;border-radius:10px;padding:8px 6px;font-size:12px;font-weight:800;cursor:pointer;color:var(--tx-2)}
+      .v17-company-switch button.active{background:#0f3d2e;color:#fff;border-color:#0f3d2e}
+      .kpi::after{display:none!important}.kpi.green{border-color:#a7f3d0;background:#fbfffd}.kpi.red{border-color:#fecaca;background:#fffafa}.kpi.amber{border-color:#fde68a;background:#fffdf5}.kpi.blue{border-color:#bfdbfe;background:#fbfdff}
+      .v17-cf-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}.v17-cf-panel{background:#fff;border:1px solid var(--bd);border-radius:14px;overflow:hidden}.v17-cf-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--bd);font-weight:800}.v17-cf-row{display:flex;justify-content:space-between;gap:12px;padding:10px 18px;border-bottom:1px solid #f0f0ed;font-size:13px}.v17-cf-row:last-child{border-bottom:0}.v17-cf-row span:last-child{font-weight:750;font-variant-numeric:tabular-nums}.v17-muted{color:var(--tx-3);font-size:12px}.v17-section-title{font-size:11px;font-weight:850;letter-spacing:.09em;text-transform:uppercase;color:var(--tx-3);margin:22px 0 10px}.v17-tipbox{border:1px solid var(--bd);border-radius:14px;padding:14px 18px;margin:14px 0;background:#fff}.v17-tipbox b{display:block;font-size:13px;margin-bottom:4px}.v17-tipbox p{font-size:12px;color:var(--tx-2);margin:0 0 10px}.v17-tipbox .btn{margin-right:8px}.v17-print-note{font-size:11px;color:var(--tx-3);margin-top:4px}
+      @media(max-width:900px){.v17-cf-grid{grid-template-columns:1fr}}
+    `;document.head.appendChild(st);
+  }
+
+  // Elimina el concepto antiguo de comisiones/plataformas como gasto.
+  function removePlatformCommissionConcept(){
+    try{
+      if(typeof CAJONES_DEF!=='undefined'){
+        let i; while((i=CAJONES_DEF.findIndex(c=>c.id==='comisiones'))>-1)CAJONES_DEF.splice(i,1);
+      }
+    }catch(e){}
+    (db.categories||[]).forEach(c=>{
+      if(/comisiones apps|marketplace|plataforma/i.test(c.name||''))c.name='Delivery app / marketplace';
+    });
+  }
+
+  function itemKey(source,month,index,obj){
+    const raw=obj.desc||obj.comentario||'';
+    return [source,month,index,obj.fecha||'',Math.round(Number(obj.monto)||0),clean(raw)].join('|');
+  }
+  function manualCat(source,month,index,obj){
+    const s=db._v16Classified||{};return s[itemKey(source,month,index,obj)]?.cat||null;
+  }
+  function splitKey(month,g){return [month,g.fecha||'',g.desc||'',Math.round(Number(g.monto)||0)].map(x=>String(x).replace(/[|]/g,'/')).join('|');}
+  function getCatLabel(cat){try{return getCatName(cat);}catch(e){return cat||'Sin clasificar';}}
+  function getGroup(cat){try{return getCatGroup(cat);}catch(e){return 'ajuste';}}
+  function isCashDeposit(desc){
+    const t=clean(desc);
+    if(/transbank|tbk|edenred|junaeb|pedidosya|uber|rappi|transferencia/.test(t))return false;
+    return /deposito efectivo|deposito caja|dep efectivo|deposito local|efectivo local|caja local|cash deposit/.test(t);
+  }
+  function v17ClassifyBank(month,g,i){
+    const m=manualCat('banco',month,i,g); if(m)return {cat:m,label:getCatLabel(m),manual:true};
+    try{return classifyCartola(g.desc||'');}catch(e){return {cat:'aj_sin',label:'Sin clasificar'};}
+  }
+  function v17ClassifyCash(month,e,i){
+    const m=manualCat('caja',month,i,e); if(m)return {cat:m,label:getCatLabel(m),manual:true};
+    try{return classifyCaja({comentario:e.comentario||'',monto:e.monto,fecha:e.fecha});}catch(err){return {cat:'aj_sin',label:'Sin clasificar',tags:[{cat:'aj_sin',label:'Sin clasificar'}]};}
+  }
+  function add(map,key,amount){key=key||'aj_sin';map[key]=(map[key]||0)+(Number(amount)||0);}
+  function expensesByCat(month){
+    const d=db.months?.[month]||{}; const out={};
+    (d.cartola?.giros||[]).forEach((g,i)=>{
+      const sp=(db._splits||{})[splitKey(month,g)];
+      if(sp&&sp.length){sp.forEach(s=>add(out,s.cat,s.amount));return;}
+      const r=v17ClassifyBank(month,g,i); add(out,r.cat,g.monto);
+    });
+    (d.movimiento?.egresos||[]).forEach((e,i)=>{
+      const r=v17ClassifyCash(month,e,i); const tags=r.tags||[{cat:r.cat}]; const share=(Number(e.monto)||0)/Math.max(tags.length,1);
+      tags.forEach(t=>add(out,t.cat,share));
+    });
+    return out;
+  }
+  function totalByGroup(month,groups){
+    const by=expensesByCat(month);return Object.entries(by).reduce((s,[cat,val])=>s+(groups.includes(getGroup(cat))?val:0),0);
+  }
+  function tipPaid(month){
+    const by=expensesByCat(month);return Object.entries(by).reduce((s,[cat,val])=>cat==='rem_propina'?s+val:s,0);
+  }
+  function workerMatch(desc){
+    const t=clean(desc); if(!t)return null;
+    return (db.entities||[]).find(e=>e.type==='trabajador' && [...(e.aliases||[]),...(e.kws||[]),e.name].some(a=>{const aa=clean(a);return aa&&(t.includes(aa)||aa.includes(t));}));
+  }
+  function propinaCandidates(month){
+    const d=db.months?.[month]||{}; const arr=[];
+    (d.cartola?.giros||[]).forEach((g,i)=>{
+      const cat=manualCat('banco',month,i,g) || (function(){try{return classifyCartola(g.desc||'').cat}catch(e){return 'aj_sin'}})();
+      if(cat==='rem_propina')return;
+      const w=workerMatch(g.desc||'');
+      if(w)arr.push({source:'banco',month,index:i,obj:g,worker:w});
+    });
+    return arr;
+  }
+  window.v17BulkPropinas=function(){
+    const m=activeMonth; if(!m)return;
+    const c=propinaCandidates(m); if(!c.length){alert('No encontré transferencias a trabajadores para marcar como propinas en este mes.');return;}
+    const total=c.reduce((s,x)=>s+Number(x.obj.monto||0),0);
+    if(!confirm(`Se marcarán ${c.length} transferencias a trabajadores como Propinas (${money(total)}).\n\nÚsalo solo si esas transferencias corresponden a propinas del mes.`))return;
+    db._v16Classified=db._v16Classified||{};
+    c.forEach(x=>{db._v16Classified[itemKey(x.source,x.month,x.index,x.obj)]={cat:'rem_propina',entityId:x.worker._id,name:x.worker.name,type:'trabajador',ts:Date.now(),bulk:'propinas'};});
+    saveDB();
+    if(typeof renderEfectivoCalc==='function')renderEfectivoCalc();
+    if(typeof renderCF==='function')renderCF();
+  };
+
+  window.renderCF=renderCF=function(){
+    const months=Object.keys(db.months||{}).sort();
+    if(!months.length){if($('#cf-empty'))$('#cf-empty').style.display='block'; if($('#cf-content'))$('#cf-content').style.display='none'; return;}
+    if(!activeMonth||!db.months[activeMonth])activeMonth=months[months.length-1];
+    if($('#cf-empty'))$('#cf-empty').style.display='none'; if($('#cf-content'))$('#cf-content').style.display='block';
+    const tabs=$('#cf-tabs-top'); if(tabs)tabs.innerHTML=months.map(m=>`<span class="month-tab ${m===activeMonth?'active':''}" onclick="activeMonth='${m}';renderCF()">${esc(monthName(m))}</span>`).join('');
+    const d=db.months[activeMonth]||{}, v=d.ventas||{}, mov=d.movimiento||{}, cartola=d.cartola||{};
+    const bankIn=Number(cartola.totalAbonos)||0, bankOut=Number(cartola.totalGiros)||0;
+    const cashIn=Number(mov.totalIngresos)||0, cashOut=Number(mov.totalEgresos)||0;
+    const ingresosReales=bankIn+cashIn, gastosReales=bankOut+cashOut, resultado=ingresosReales-gastosReales;
+    const groups=[
+      ['Comida / insumos',['costo_variable']],['Personal',['remuneraciones']],['Gastos fijos',['costo_fijo']],['Operación local',['gasto_operacional','delivery']],['Marketing',['marketing']],['Administración / finanzas',['administracion','impuestos','intercompany','ajuste']]
+    ].map(([label,gs])=>[label,totalByGroup(activeMonth,gs)]).filter(x=>x[1]>0);
+    const content=$('#cf-content'); if(!content)return;
+    content.innerHTML=`
+      <div class="v17-cf-grid">
+        <div class="v17-cf-panel"><div class="v17-cf-head"><span>Ingresos reales</span><strong class="tp">${money(ingresosReales)}</strong></div>
+          <div class="v17-cf-row"><span>Abonos banco</span><span class="tp">${money(bankIn)}</span></div>
+          <div class="v17-cf-row"><span>Ingresos caja efectivo</span><span class="tp">${money(cashIn)}</span></div>
+          <div class="v17-cf-row"><span class="v17-muted">Ventas sistema Toteat (referencia)</span><span>${money(v.ventaNeta||0)}</span></div>
+        </div>
+        <div class="v17-cf-panel"><div class="v17-cf-head"><span>Gastos pagados</span><strong class="tn">${money(gastosReales)}</strong></div>
+          <div class="v17-cf-row"><span>Giros banco</span><span class="tn">${money(bankOut)}</span></div>
+          <div class="v17-cf-row"><span>Egresos caja chica</span><span class="tn">${money(cashOut)}</span></div>
+          <div class="v17-cf-row"><span>Resultado flujo del mes</span><span class="${resultado>=0?'tp':'tn'}">${money(resultado)}</span></div>
+        </div>
+      </div>
+      <div class="v17-section-title">En qué se gastó</div>
+      <div class="tbl-wrap" style="margin-bottom:16px"><table><thead><tr><th>Bloque</th><th class="tr">Monto</th><th class="tr">% gastos</th></tr></thead><tbody>${groups.map(([l,val])=>`<tr><td>${esc(l)}</td><td class="tr">${money(val)}</td><td class="tr tm">${gastosReales?((val/gastosReales)*100).toFixed(1)+'%':'-'}</td></tr>`).join('')}</tbody></table></div>
+      <div class="v17-section-title">Transferencias banco</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Fecha</th><th>Glosa</th><th class="tr">Monto</th><th>Categoría</th></tr></thead><tbody>${(cartola.giros||[]).map((g,i)=>{const sp=(db._splits||{})[splitKey(activeMonth,g)];const r=v17ClassifyBank(activeMonth,g,i);return `<tr><td class="tm">${esc(g.fecha||'')}</td><td>${esc(g.desc||'')}${sp?`<div class="v8-split-lines">${sp.map(s=>`${esc(getCatLabel(s.cat))}: ${money(s.amount)}`).join(' · ')}</div>`:''}</td><td class="tr">${money(g.monto)}</td><td>${sp?'<span class="badge b-blue">Subdividido</span>':`<span class="badge b-gray">${esc(getCatLabel(r.cat))}</span>`} <button class="btn btn-sm" onclick="v8OpenSplit&&v8OpenSplit('${activeMonth}',${i})">Dividir</button></td></tr>`}).join('')}</tbody></table></div>`;
+  };
+
+  window.renderEfectivoCalc=function(){
+    if(!activeMonth||!db.months[activeMonth])return;
+    const d=db.months[activeMonth], v=d.ventas||{}, mov=d.movimiento||{}, cartola=d.cartola||{}, conc=(typeof getConcData==='function'?getConcData(activeMonth):((db._conc||{})[activeMonth]||{}));
+    const ventaEfectivo=Number(v.efectivo)||0, ingresosCaja=Number(mov.totalIngresos)||0, gastosCaja=Number(mov.totalEgresos)||0;
+    const depositosEfectivo=(cartola.abonos||[]).filter(a=>isCashDeposit(a.desc||'')).reduce((s,a)=>s+Number(a.monto||0),0);
+    const transito=Number(conc.transito)||0, custodia=Number(conc.custodia)||0;
+    const diferencia=ventaEfectivo+ingresosCaja-gastosCaja-depositosEfectivo-transito-custodia;
+    if($('#ef-venta-efectivo'))$('#ef-venta-efectivo').textContent=money(ventaEfectivo);
+    if($('#ef-cuadratura-badge'))$('#ef-cuadratura-badge').innerHTML=Math.abs(diferencia)<=500?'<div class="conc-badge ok">Caja conciliada</div>':`<div class="conc-badge ${diferencia<0?'error':'warn'}">${diferencia<0?'Faltante':'Por conciliar'} ${money(Math.abs(diferencia))}</div>`;
+    const wf=$('#ef-waterfall'); if(wf)wf.innerHTML=`
+      <div class="wf-row"><div class="wf-icon">$</div><div class="wf-label">Venta efectivo sistema<small>Toteat como referencia de caja</small></div><div></div><div class="wf-amount">${money(ventaEfectivo)}</div></div>
+      <div class="wf-row"><div class="wf-icon">+</div><div class="wf-label">Ingresos de caja efectivo<small>Movimientos manuales de caja</small></div><div></div><div class="wf-amount pos">${money(ingresosCaja)}</div></div>
+      <div class="wf-row"><div class="wf-icon">-</div><div class="wf-label">Gastos caja chica<small>Pagos desde efectivo del local</small></div><div></div><div class="wf-amount neg">${money(gastosCaja)}</div></div>
+      <div class="wf-row"><div class="wf-icon">-</div><div class="wf-label">Depósitos de efectivo en banco<small>Solo glosas tipo depósito efectivo/caja. No incluye transferencias normales.</small></div><div></div><div class="wf-amount neg">${money(depositosEfectivo)}</div></div>
+      <div class="wf-row"><div class="wf-icon">-</div><div class="wf-label">Efectivo en tránsito / fondo sencillo</div><div></div><div class="wf-amount neg">${money(transito+custodia)}</div></div>
+      <div class="wf-row wf-total"><div class="wf-icon">=</div><div class="wf-label">Diferencia por conciliar</div><div></div><div class="wf-amount ${diferencia>=0?'result-pos':'result-neg'}">${money(Math.abs(diferencia))}</div></div>`;
+    const posTips=Number(v.propinas)||0, paid=tipPaid(activeMonth), diff=posTips-paid, candidates=propinaCandidates(activeMonth);
+    let box=$('#v17-tipbox'); if(!box){box=document.createElement('div');box.id='v17-tipbox';box.className='v17-tipbox';wf?.insertAdjacentElement('afterend',box);} 
+    box.innerHTML=`<b>Propinas</b><p>Toteat: ${money(posTips)} · Pagadas/clasificadas: ${money(paid)} · Diferencia: ${money(Math.abs(diff))}</p>${candidates.length?`<button class="btn btn-primary" onclick="v17BulkPropinas()">Marcar transferencias a trabajadores como propinas</button><span class="v17-muted">${candidates.length} posibles · ${money(candidates.reduce((s,x)=>s+Number(x.obj.monto||0),0))}</span>`:'<span class="v17-muted">Sin transferencias a trabajadores pendientes de revisar.</span>'}`;
+    // Mantiene tablas antiguas si existen sin reventar.
+    try{const bycat={};(mov.egresos||[]).forEach((e,i)=>{const r=v17ClassifyCash(activeMonth,e,i);(r.tags||[{cat:r.cat}]).forEach(t=>add(bycat,getCatLabel(t.cat),Number(e.monto||0)/Math.max((r.tags||[{cat:r.cat}]).length,1)));}); if($('#ef-by-cat'))$('#ef-by-cat').innerHTML=Object.entries(bycat).sort((a,b)=>b[1]-a[1]).map(([n,val])=>`<tr><td>${esc(n)}</td><td class="tr">${money(val)}</td><td></td></tr>`).join('');}catch(e){}
+  };
+
+  function reportData(month){
+    const d=db.months?.[month]||{}, v=d.ventas||{}, mov=d.movimiento||{}, cartola=d.cartola||{};
+    const by=expensesByCat(month); const totalExp=Object.values(by).reduce((s,v)=>s+v,0);
+    const blocks=[['Comida / insumos',['costo_variable']],['Personal',['remuneraciones']],['Gastos fijos',['costo_fijo']],['Operación local',['gasto_operacional','delivery']],['Marketing',['marketing']],['Administración / finanzas',['administracion','impuestos','intercompany','ajuste']]].map(([label,gs])=>({label,total:Object.entries(by).reduce((s,[cat,val])=>s+(gs.includes(getGroup(cat))?val:0),0)})).filter(x=>x.total>0);
+    const topCats=Object.entries(by).sort((a,b)=>b[1]-a[1]).slice(0,12).map(([cat,val])=>({cat,label:getCatLabel(cat),value:val,pct:totalExp?val/totalExp:0}));
+    return {v,mov,cartola,totalExp,bankIn:cartola.totalAbonos||0,cashIn:mov.totalIngresos||0,bankOut:cartola.totalGiros||0,cashOut:mov.totalEgresos||0,blocks,topCats,tips:{pos:v.propinas||0,paid:tipPaid(month)}};
+  }
+  window.v17OpenReport=function(){
+    if(!activeMonth||!db.months[activeMonth]){alert('No hay mes cargado para reportar.');return;}
+    const data=reportData(activeMonth), company=COMPANY_INFO[db.activeCompany]?.name||'Empresa';
+    const ingresos=data.bankIn+data.cashIn, gastos=data.bankOut+data.cashOut, res=ingresos-gastos;
+    const html=`<!doctype html><html><head><meta charset="utf-8"><title>Reporte ${esc(company)} ${esc(monthName(activeMonth))}</title><style>
+      body{font-family:Inter,Arial,sans-serif;margin:0;background:#fff;color:#111}.page{max-width:920px;margin:0 auto;padding:34px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:18px;margin-bottom:24px}.brand{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:#555}.title{font-size:28px;font-weight:800;letter-spacing:-.04em;margin-top:4px}.period{text-align:right;font-size:12px;color:#555}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 26px}.k{border:1px solid #ddd;border-radius:14px;padding:14px}.k small{display:block;text-transform:uppercase;letter-spacing:.09em;font-size:10px;color:#777;font-weight:800;margin-bottom:8px}.k b{font-size:20px;letter-spacing:-.04em}.section{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:900;margin:26px 0 10px}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;border-bottom:1px solid #bbb;padding:9px;color:#777;text-transform:uppercase;letter-spacing:.08em;font-size:10px}td{border-bottom:1px solid #eee;padding:10px 9px}.tr{text-align:right}.bar{height:7px;background:#e9efe9;border-radius:999px;overflow:hidden}.bar i{display:block;height:100%;background:#0f3d2e}.note{font-size:11px;color:#666;line-height:1.5;margin-top:18px}.print{position:fixed;right:20px;top:20px;background:#0f3d2e;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}@media print{.print{display:none}.page{padding:20px;max-width:none}}
+      </style></head><body><button class="print" onclick="print()">Guardar PDF</button><main class="page"><header><div><div class="brand">${esc(company)}</div><div class="title">Reporte mensual</div></div><div class="period">${esc(monthName(activeMonth))}<br>${new Date().toLocaleDateString('es-CL')}</div></header>
+      <div class="grid"><div class="k"><small>Ventas sistema</small><b>${money(data.v.ventaNeta||0)}</b></div><div class="k"><small>Ingresos reales</small><b>${money(ingresos)}</b></div><div class="k"><small>Gastos pagados</small><b>${money(gastos)}</b></div><div class="k"><small>Flujo neto</small><b>${money(res)}</b></div></div>
+      <div class="section">Gastos por bloque</div><table><thead><tr><th>Bloque</th><th class="tr">Monto</th><th class="tr">% gastos</th></tr></thead><tbody>${data.blocks.map(x=>`<tr><td>${esc(x.label)}</td><td class="tr">${money(x.total)}</td><td class="tr">${gastos?((x.total/gastos)*100).toFixed(1)+'%':'-'}</td></tr>`).join('')}</tbody></table>
+      <div class="section">Detalle de gasto</div><table><thead><tr><th>Categoría</th><th class="tr">Monto</th><th style="width:180px">Peso</th></tr></thead><tbody>${data.topCats.map(x=>`<tr><td>${esc(x.label)}</td><td class="tr">${money(x.value)}</td><td><div class="bar"><i style="width:${Math.min(100,x.pct*100).toFixed(0)}%"></i></div></td></tr>`).join('')}</tbody></table>
+      <div class="section">Caja y propinas</div><table><tbody><tr><td>Venta efectivo sistema</td><td class="tr">${money(data.v.efectivo||0)}</td></tr><tr><td>Ingresos caja efectivo</td><td class="tr">${money(data.cashIn)}</td></tr><tr><td>Egresos caja chica</td><td class="tr">${money(data.cashOut)}</td></tr><tr><td>Propinas Toteat</td><td class="tr">${money(data.tips.pos)}</td></tr><tr><td>Propinas pagadas/clasificadas</td><td class="tr">${money(data.tips.paid)}</td></tr></tbody></table>
+      <p class="note">Reporte gerencial. Ventas sistema y flujo real se muestran separados: Toteat registra ventas del período; banco/caja registra movimientos efectivamente recibidos o pagados en el mes. No calcula impuestos ni comisiones de plataformas.</p></main></body></html>`;
+    const w=window.open('','_blank'); if(!w){alert('El navegador bloqueó la ventana del reporte. Permite pop-ups para esta página.');return;} w.document.write(html); w.document.close();
+  };
+
+  const oldNav=window.nav;
+  window.nav=function(page){ensureCompanies(); const r=oldNav?oldNav.apply(this,arguments):undefined; setTimeout(()=>{renderCompanySwitcher();installReportButton();removePlatformCommissionConcept();},0); return r;};
+  installStyles(); renderCompanySwitcher(); installReportButton(); removePlatformCommissionConcept();
+  setTimeout(()=>{try{if(typeof nav==='function')nav('dashboard');}catch(e){}},0);
+})();
+
+
+/* V18 - Reporte mensual: insights accionables con montos y variaciones reales; propinas fuera de insights */
+(function(){
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const clean=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const money=n=>typeof fCLP==='function'?fCLP(n):('$ '+Math.round(Number(n)||0).toLocaleString('es-CL'));
+  const monthLabel=m=>typeof mLabel==='function'?mLabel(m):String(m||'');
+  const COMPANY={streetflags:'Street Flags',mafia:'Mafia'};
+  function groupOf(cat){try{return getCatGroup(cat)}catch(e){return 'ajuste'}}
+  function labelOf(cat){try{return getCatName(cat)}catch(e){return cat||'Sin clasificar'}}
+  function splitKey(month,g){return [month,g.fecha||'',g.desc||'',Math.round(Number(g.monto)||0)].map(x=>String(x).replace(/[|]/g,'/')).join('|');}
+  function itemKey(source,month,index,obj){const raw=obj.desc||obj.comentario||'';return [source,month,index,obj.fecha||'',Math.round(Number(obj.monto)||0),clean(raw)].join('|');}
+  function manualCat(source,month,index,obj){return (db._v16Classified||{})[itemKey(source,month,index,obj)]?.cat||null;}
+  function add(map,key,amount){key=key||'aj_sin';map[key]=(map[key]||0)+(Number(amount)||0);}
+  function classifyBank(month,g,i){const m=manualCat('banco',month,i,g); if(m)return {cat:m}; try{return classifyCartola(g.desc||'')}catch(e){return {cat:'aj_sin'}}}
+  function classifyCash(month,e,i){const m=manualCat('caja',month,i,e); if(m)return {cat:m,tags:[{cat:m}]}; try{return classifyCaja({comentario:e.comentario||'',monto:e.monto,fecha:e.fecha})}catch(e){return {cat:'aj_sin',tags:[{cat:'aj_sin'}]}}}
+  function expensesByCat(month){
+    const d=(db.months||{})[month]||{}, out={};
+    (d.cartola?.giros||[]).forEach((g,i)=>{
+      const sp=(db._splits||{})[splitKey(month,g)];
+      if(sp&&sp.length){sp.forEach(s=>add(out,s.cat,s.amount));return;}
+      const r=classifyBank(month,g,i); add(out,r.cat,g.monto);
+    });
+    (d.movimiento?.egresos||[]).forEach((e,i)=>{
+      const r=classifyCash(month,e,i), tags=r.tags||[{cat:r.cat}], share=(Number(e.monto)||0)/Math.max(1,tags.length);
+      tags.forEach(t=>add(out,t.cat,share));
+    });
+    return out;
+  }
+  function previousMonthKey(month){const arr=Object.keys(db.months||{}).sort(); const ix=arr.indexOf(month); return ix>0?arr[ix-1]:null;}
+  function pct(delta,base){if(!base)return ''; return ` (${delta>0?'+':''}${(delta/base*100).toFixed(1)}%)`;}
+  function insightData(month){
+    const cur=expensesByCat(month), prevMonth=previousMonthKey(month), prev=prevMonth?expensesByCat(prevMonth):{};
+    const total=Object.values(cur).reduce((s,v)=>s+v,0);
+    const exclude=new Set(['rem_propina']);
+    const entries=Object.entries(cur).filter(([cat,val])=>!exclude.has(cat)&&val>0).sort((a,b)=>b[1]-a[1]);
+    const top=entries[0]||null;
+    const cats=new Set([...Object.keys(cur),...Object.keys(prev)]);
+    let up=null, down=null;
+    cats.forEach(cat=>{
+      if(exclude.has(cat))return;
+      const c=Number(cur[cat]||0), p=Number(prev[cat]||0), d=c-p;
+      if(d>0 && (!up || d>up.delta))up={cat,cur:c,prev:p,delta:d};
+      if(d<0 && (!down || d<down.delta))down={cat,cur:c,prev:p,delta:d};
+    });
+    const pendingCats=new Set(['aj_sin','adm_rendicion','adm_rendiciones','op_rendiciones','adm_compra_tercero','ic_admin_puente']);
+    const pending=Object.entries(cur).reduce((s,[cat,val])=>s+(pendingCats.has(cat)?val:0),0);
+    const insights=[];
+    if(top)insights.push({title:'Mayor gasto del mes',text:`${labelOf(top[0])}: ${money(top[1])}${total?` (${(top[1]/total*100).toFixed(1)}% del gasto)`:''}.`});
+    if(up)insights.push({title:'Mayor alza vs mes anterior',text:`${labelOf(up.cat)} subió ${money(up.delta)}${pct(up.delta,up.prev)}. Actual: ${money(up.cur)}.`});
+    if(down)insights.push({title:'Mayor baja vs mes anterior',text:`${labelOf(down.cat)} bajó ${money(Math.abs(down.delta))}${pct(down.delta,down.prev)}. Actual: ${money(down.cur)}.`});
+    if(pending>0)insights.push({title:'Pendiente por revisar',text:`${money(pending)} requiere clasificación o subdivisión para que el gasto quede exacto.`});
+    if(!insights.length)insights.push({title:'Sin variaciones relevantes',text:'No hay cambios comparables contra el mes anterior todavía.'});
+    return insights;
+  }
+  function reportData(month){
+    const d=(db.months||{})[month]||{}, v=d.ventas||{}, mov=d.movimiento||{}, cartola=d.cartola||{};
+    const by=expensesByCat(month), totalExp=Object.values(by).reduce((s,v)=>s+v,0);
+    const blocks=[['Comida / insumos',['costo_variable']],['Personal',['remuneraciones']],['Gastos fijos',['costo_fijo']],['Operación local',['gasto_operacional','delivery']],['Marketing',['marketing']],['Administración / finanzas',['administracion','impuestos','intercompany','ajuste']]]
+      .map(([label,gs])=>({label,total:Object.entries(by).reduce((s,[cat,val])=>s+(gs.includes(groupOf(cat))?val:0),0)})).filter(x=>x.total>0);
+    const topCats=Object.entries(by).filter(([cat])=>cat!=='rem_propina').sort((a,b)=>b[1]-a[1]).slice(0,12).map(([cat,val])=>({cat,label:labelOf(cat),value:val,pct:totalExp?val/totalExp:0}));
+    return {v,mov,cartola,totalExp,bankIn:cartola.totalAbonos||0,cashIn:mov.totalIngresos||0,bankOut:cartola.totalGiros||0,cashOut:mov.totalEgresos||0,blocks,topCats,insights:insightData(month)};
+  }
+  window.v17OpenReport=function(){
+    if(!window.activeMonth||!(db.months||{})[activeMonth]){alert('No hay mes cargado para reportar.');return;}
+    const data=reportData(activeMonth), company=COMPANY[db.activeCompany]||'Empresa', ingresos=Number(data.bankIn||0)+Number(data.cashIn||0), gastos=Number(data.bankOut||0)+Number(data.cashOut||0), res=ingresos-gastos;
+    const html=`<!doctype html><html><head><meta charset="utf-8"><title>Reporte ${esc(company)} ${esc(monthLabel(activeMonth))}</title><style>
+      body{font-family:Inter,Arial,sans-serif;margin:0;background:#fff;color:#111}.page{max-width:920px;margin:0 auto;padding:34px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1.5px solid #111;padding-bottom:18px;margin-bottom:24px}.brand{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:#555}.title{font-size:28px;font-weight:800;letter-spacing:-.04em;margin-top:4px}.period{text-align:right;font-size:12px;color:#555}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 26px}.k{border:1px solid #ddd;border-radius:12px;padding:14px}.k small{display:block;text-transform:uppercase;letter-spacing:.09em;font-size:10px;color:#777;font-weight:800;margin-bottom:8px}.k b{font-size:20px;letter-spacing:-.04em}.section{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:900;margin:26px 0 10px}.insights{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.ins{border-top:1px solid #111;padding:10px 0 2px}.ins b{display:block;font-size:12px;margin-bottom:4px}.ins span{font-size:12px;color:#555;line-height:1.45}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;border-bottom:1px solid #bbb;padding:9px;color:#777;text-transform:uppercase;letter-spacing:.08em;font-size:10px}td{border-bottom:1px solid #eee;padding:10px 9px}.tr{text-align:right}.bar{height:7px;background:#e9efe9;border-radius:999px;overflow:hidden}.bar i{display:block;height:100%;background:#0f3d2e}.note{font-size:11px;color:#666;line-height:1.5;margin-top:18px}.print{position:fixed;right:20px;top:20px;background:#0f3d2e;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}@media print{.print{display:none}.page{padding:20px;max-width:none}.insights{grid-template-columns:repeat(2,1fr)}}
+      </style></head><body><button class="print" onclick="print()">Guardar PDF</button><main class="page"><header><div><div class="brand">${esc(company)}</div><div class="title">Reporte mensual</div></div><div class="period">${esc(monthLabel(activeMonth))}<br>${new Date().toLocaleDateString('es-CL')}</div></header>
+      <div class="grid"><div class="k"><small>Ventas sistema</small><b>${money(data.v.ventaNeta||0)}</b></div><div class="k"><small>Ingresos reales</small><b>${money(ingresos)}</b></div><div class="k"><small>Gastos pagados</small><b>${money(gastos)}</b></div><div class="k"><small>Flujo neto</small><b>${money(res)}</b></div></div>
+      <div class="section">Insights del mes</div><div class="insights">${data.insights.map(x=>`<div class="ins"><b>${esc(x.title)}</b><span>${esc(x.text)}</span></div>`).join('')}</div>
+      <div class="section">Gastos por bloque</div><table><thead><tr><th>Bloque</th><th class="tr">Monto</th><th class="tr">% gastos</th></tr></thead><tbody>${data.blocks.map(x=>`<tr><td>${esc(x.label)}</td><td class="tr">${money(x.total)}</td><td class="tr">${gastos?((x.total/gastos)*100).toFixed(1)+'%':'-'}</td></tr>`).join('')}</tbody></table>
+      <div class="section">Detalle de gasto</div><table><thead><tr><th>Categoría</th><th class="tr">Monto</th><th style="width:180px">Peso</th></tr></thead><tbody>${data.topCats.map(x=>`<tr><td>${esc(x.label)}</td><td class="tr">${money(x.value)}</td><td><div class="bar"><i style="width:${Math.min(100,x.pct*100).toFixed(0)}%"></i></div></td></tr>`).join('')}</tbody></table>
+      <p class="note">Reporte gerencial. Ventas sistema y flujo real se muestran separados: Toteat registra ventas del período; banco/caja registra movimientos efectivamente recibidos o pagados en el mes. No estima impuestos ni interpreta diferencias de timing como gasto.</p></main></body></html>`;
+    const w=window.open('','_blank'); if(!w){alert('El navegador bloqueó la ventana del reporte. Permite pop-ups para esta página.');return;} w.document.write(html); w.document.close();
+  };
+})();
+</script>
+
+
+<script>
+/* V19 - Reporte: distribución ordenada del efectivo + comparativa con dos meses anteriores */
+(function(){
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const clean=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const money=n=>typeof fCLP==='function'?fCLP(n):('$ '+Math.round(Number(n)||0).toLocaleString('es-CL'));
+  const monthLabel=m=>typeof mLabel==='function'?mLabel(m):String(m||'');
+  const companyName=()=>({streetflags:'Street Flags',mafia:'Mafia'}[db.activeCompany]||'Empresa');
+  function add(map,k,v){k=k||'aj_sin';map[k]=(map[k]||0)+(Number(v)||0);}
+  function labelOf(cat){try{return getCatName(cat)}catch(e){return cat||'Sin clasificar'}}
+  function groupOf(cat){try{return getCatGroup(cat)}catch(e){return 'ajuste'}}
+  function splitKey(month,g){return [month,g.fecha||'',g.desc||'',Math.round(Number(g.monto)||0)].map(x=>String(x).replace(/[|]/g,'/')).join('|');}
+  function itemKey(source,month,index,obj){const raw=obj.desc||obj.comentario||'';return [source,month,index,obj.fecha||'',Math.round(Number(obj.monto)||0),clean(raw)].join('|');}
+  function manualCat(source,month,index,obj){return (db._v16Classified||{})[itemKey(source,month,index,obj)]?.cat||null;}
+  function classifyBank(month,g,i){const m=manualCat('banco',month,i,g); if(m)return {cat:m}; try{return classifyCartola(g.desc||'')}catch(e){return {cat:'aj_sin'}}}
+  function classifyCash(month,e,i){const m=manualCat('caja',month,i,e); if(m)return {cat:m,tags:[{cat:m}]}; try{return classifyCaja({comentario:e.comentario||'',monto:e.monto,fecha:e.fecha})}catch(e){return {cat:'aj_sin',tags:[{cat:'aj_sin'}]}}}
+  function isCashDeposit(desc){const t=clean(desc); if(/transbank|tbk|edenred|junaeb|pedidosya|uber|rappi|transferencia/.test(t))return false; return /deposito efectivo|deposito caja|dep efectivo|deposito local|efectivo local|caja local|cash deposit/.test(t);}
+  function expensesByCat(month){
+    const d=(db.months||{})[month]||{}, out={};
+    (d.cartola?.giros||[]).forEach((g,i)=>{const sp=(db._splits||{})[splitKey(month,g)]; if(sp&&sp.length){sp.forEach(s=>add(out,s.cat,s.amount));return;} const r=classifyBank(month,g,i); add(out,r.cat,g.monto);});
+    (d.movimiento?.egresos||[]).forEach((e,i)=>{const r=classifyCash(month,e,i), tags=r.tags||[{cat:r.cat}], share=(Number(e.monto)||0)/Math.max(1,tags.length); tags.forEach(t=>add(out,t.cat,share));});
+    return out;
+  }
+  function cashByCat(month){
+    const d=(db.months||{})[month]||{}, out={};
+    (d.movimiento?.egresos||[]).forEach((e,i)=>{const r=classifyCash(month,e,i), tags=r.tags||[{cat:r.cat}], share=(Number(e.monto)||0)/Math.max(1,tags.length); tags.forEach(t=>add(out,t.cat,share));});
+    return out;
+  }
+  function sumGroups(by,groups){return Object.entries(by).reduce((s,[cat,v])=>s+(groups.includes(groupOf(cat))?Number(v)||0:0),0);}
+  function bankCashDeposits(month){const d=(db.months||{})[month]||{};return (d.cartola?.abonos||[]).filter(a=>isCashDeposit(a.desc||'')).reduce((s,a)=>s+Number(a.monto||0),0);}
+  function conc(month){return (db._conc&&db._conc[month])||{transito:0,custodia:0};}
+  function monthMetrics(month){
+    const d=(db.months||{})[month]||{}, v=d.ventas||{}, mov=d.movimiento||{}, cartola=d.cartola||{}, by=expensesByCat(month), cash=cashByCat(month);
+    const cashOut=Number(mov.totalEgresos||0), cashIn=Number(mov.totalIngresos||0), cashDep=bankCashDeposits(month), c=conc(month);
+    const bankIn=Number(cartola.totalAbonos||0), bankOut=Number(cartola.totalGiros||0), ingresos=bankIn+cashIn, gastos=bankOut+cashOut;
+    return {month,v,mov,cartola,by,cash,cashOut,cashIn,cashDep,transito:Number(c.transito||0),custodia:Number(c.custodia||0),ventaEfectivo:Number(v.efectivo||0),ventasSistema:Number(v.ventaNeta||0),bankIn,bankOut,ingresos,gastos,flujo:ingresos-gastos,food:sumGroups(by,['costo_variable'])};
+  }
+  function compareMonths(active){const arr=Object.keys(db.months||{}).sort(); const i=arr.indexOf(active); return arr.slice(Math.max(0,i-2),i+1);}
+  function insightData(month){
+    const cur=expensesByCat(month), arr=compareMonths(month), prevMonth=arr.length>1?arr[arr.length-2]:null, prev=prevMonth?expensesByCat(prevMonth):{};
+    const total=Object.values(cur).reduce((s,v)=>s+v,0), exclude=new Set(['rem_propina']);
+    const entries=Object.entries(cur).filter(([cat,val])=>!exclude.has(cat)&&val>0).sort((a,b)=>b[1]-a[1]);
+    const top=entries[0]||null, cats=new Set([...Object.keys(cur),...Object.keys(prev)]); let up=null, down=null;
+    cats.forEach(cat=>{if(exclude.has(cat))return; const c=Number(cur[cat]||0), p=Number(prev[cat]||0), d=c-p; if(d>0&&(!up||d>up.delta))up={cat,cur:c,prev:p,delta:d}; if(d<0&&(!down||d<down.delta))down={cat,cur:c,prev:p,delta:d};});
+    const pendingCats=new Set(['aj_sin','adm_rendicion','adm_rendiciones','op_rendiciones','adm_compra_tercero','ic_admin_puente']);
+    const pending=Object.entries(cur).reduce((s,[cat,val])=>s+(pendingCats.has(cat)?Number(val)||0:0),0);
+    function pct(delta,base){return base?` (${delta>0?'+':''}${(delta/base*100).toFixed(1)}%)`:'';}
+    const out=[];
+    if(top)out.push({title:'Mayor gasto del mes',text:`${labelOf(top[0])}: ${money(top[1])}${total?` (${(top[1]/total*100).toFixed(1)}% del gasto)`:''}.`});
+    if(up)out.push({title:'Mayor alza vs mes anterior',text:`${labelOf(up.cat)} subió ${money(up.delta)}${pct(up.delta,up.prev)}. Actual: ${money(up.cur)}.`});
+    if(down)out.push({title:'Mayor baja vs mes anterior',text:`${labelOf(down.cat)} bajó ${money(Math.abs(down.delta))}${pct(down.delta,down.prev)}. Actual: ${money(down.cur)}.`});
+    if(pending>0)out.push({title:'Pendiente por revisar',text:`${money(pending)} requiere clasificación o subdivisión para que el gasto quede exacto.`});
+    return out.length?out:[{title:'Sin variaciones relevantes',text:'Todavía no hay base comparable suficiente contra meses anteriores.'}];
+  }
+  function reportPayload(month){
+    const m=monthMetrics(month), by=m.by, totalExp=Object.values(by).reduce((s,v)=>s+Number(v)||0,0);
+    const blocks=[['Comida / insumos',['costo_variable']],['Personal',['remuneraciones']],['Gastos fijos',['costo_fijo']],['Operación local',['gasto_operacional','delivery']],['Marketing',['marketing']],['Administración / finanzas',['administracion','impuestos','intercompany','ajuste']]]
+      .map(([label,gs])=>({label,total:sumGroups(by,gs)})).filter(x=>x.total>0);
+    const topCats=Object.entries(by).filter(([cat])=>cat!=='rem_propina').sort((a,b)=>b[1]-a[1]).slice(0,12).map(([cat,val])=>({cat,label:labelOf(cat),value:val,pct:totalExp?val/totalExp:0}));
+    const cashTotal=Object.values(m.cash).reduce((s,v)=>s+Number(v)||0,0);
+    const cashRows=Object.entries(m.cash).sort((a,b)=>b[1]-a[1]).map(([cat,val])=>({label:labelOf(cat),value:val,pct:cashTotal?val/cashTotal:0}));
+    const cashPending=m.ventaEfectivo+m.cashIn-m.cashOut-m.cashDep-m.transito-m.custodia;
+    return {...m,blocks,topCats,cashRows,cashPending,insights:insightData(month),comparative:compareMonths(month).map(monthMetrics)};
+  }
+  window.v17OpenReport=function(){
+    if(!window.activeMonth||!(db.months||{})[activeMonth]){alert('No hay mes cargado para reportar.');return;}
+    const data=reportPayload(activeMonth), company=companyName();
+    const cmp=data.comparative;
+    const cmpHeader=cmp.map(x=>`<th class="tr">${esc(monthLabel(x.month))}</th>`).join('');
+    const cmpRow=(label,fn)=>`<tr><td>${esc(label)}</td>${cmp.map(x=>`<td class="tr">${money(fn(x))}</td>`).join('')}</tr>`;
+    const cashRows=data.cashRows.length?data.cashRows.map(x=>`<tr><td>${esc(x.label)}</td><td class="tr">${money(x.value)}</td><td class="tr">${(x.pct*100).toFixed(1)}%</td></tr>`).join(''):`<tr><td colspan="3">Sin egresos de caja efectivo cargados.</td></tr>`;
+    const html=`<!doctype html><html><head><meta charset="utf-8"><title>Reporte ${esc(company)} ${esc(monthLabel(activeMonth))}</title><style>
+      body{font-family:Inter,Arial,sans-serif;margin:0;background:#fff;color:#111}.page{max-width:940px;margin:0 auto;padding:34px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid #d8d8d2;padding-bottom:18px;margin-bottom:24px}.brand{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:#555}.title{font-size:28px;font-weight:850;letter-spacing:-.04em;margin-top:4px}.period{text-align:right;font-size:12px;color:#555}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 26px}.k{border:1px solid #ddd;border-radius:12px;padding:14px;background:#fff}.k small{display:block;text-transform:uppercase;letter-spacing:.09em;font-size:10px;color:#777;font-weight:800;margin-bottom:8px}.k b{font-size:20px;letter-spacing:-.04em}.section{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:900;margin:28px 0 10px}.insights{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.ins{border:1px solid #e2e2dc;border-radius:10px;padding:12px;background:#fff}.ins b{display:block;font-size:12px;margin-bottom:4px}.ins span{font-size:12px;color:#555;line-height:1.45}.split{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}table{width:100%;border-collapse:collapse;font-size:12px;background:#fff}th{text-align:left;border-bottom:1px solid #bbb;padding:9px;color:#777;text-transform:uppercase;letter-spacing:.08em;font-size:10px}td{border-bottom:1px solid #eee;padding:10px 9px}.tr{text-align:right}.note{font-size:11px;color:#666;line-height:1.5;margin-top:18px}.mini{color:#777;font-size:11px;line-height:1.4}.print{position:fixed;right:20px;top:20px;background:#0f3d2e;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}@media print{.print{display:none}.page{padding:20px;max-width:none}.insights{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr 1fr}body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+      </style></head><body><button class="print" onclick="print()">Guardar PDF</button><main class="page"><header><div><div class="brand">${esc(company)}</div><div class="title">Reporte mensual</div></div><div class="period">${esc(monthLabel(activeMonth))}<br>${new Date().toLocaleDateString('es-CL')}</div></header>
+      <div class="grid"><div class="k"><small>Ventas sistema</small><b>${money(data.ventasSistema)}</b></div><div class="k"><small>Ingresos reales</small><b>${money(data.ingresos)}</b></div><div class="k"><small>Gastos pagados</small><b>${money(data.gastos)}</b></div><div class="k"><small>Flujo neto</small><b>${money(data.flujo)}</b></div></div>
+      <div class="section">Insights del mes</div><div class="insights">${data.insights.map(x=>`<div class="ins"><b>${esc(x.title)}</b><span>${esc(x.text)}</span></div>`).join('')}</div>
+      <div class="section">Comparativa mensual</div><table><thead><tr><th>Indicador</th>${cmpHeader}</tr></thead><tbody>${cmpRow('Ventas sistema',x=>x.ventasSistema)}${cmpRow('Ingresos reales',x=>x.ingresos)}${cmpRow('Gastos pagados',x=>x.gastos)}${cmpRow('Comida / insumos',x=>x.food)}${cmpRow('Uso de efectivo',x=>x.cashOut)}${cmpRow('Flujo neto',x=>x.flujo)}</tbody></table>
+      <div class="section">Distribución del efectivo</div><div class="split"><table><tbody><tr><td>Venta efectivo sistema</td><td class="tr">${money(data.ventaEfectivo)}</td></tr><tr><td>Ingresos manuales a caja</td><td class="tr">${money(data.cashIn)}</td></tr><tr><td>Pagos realizados desde caja</td><td class="tr">${money(data.cashOut)}</td></tr><tr><td>Depósitos de efectivo en banco</td><td class="tr">${money(data.cashDep)}</td></tr><tr><td>Efectivo en tránsito / fondo sencillo</td><td class="tr">${money(data.transito+data.custodia)}</td></tr><tr><td><b>Pendiente de explicar</b></td><td class="tr"><b>${money(data.cashPending)}</b></td></tr></tbody></table><table><thead><tr><th>Uso caja</th><th class="tr">Monto</th><th class="tr">%</th></tr></thead><tbody>${cashRows}</tbody></table></div>
+      <div class="section">Gastos por bloque</div><table><thead><tr><th>Bloque</th><th class="tr">Monto</th><th class="tr">% gastos</th></tr></thead><tbody>${data.blocks.map(x=>`<tr><td>${esc(x.label)}</td><td class="tr">${money(x.total)}</td><td class="tr">${data.gastos?((x.total/data.gastos)*100).toFixed(1)+'%':'-'}</td></tr>`).join('')}</tbody></table>
+      <div class="section">Detalle de gasto</div><table><thead><tr><th>Categoría</th><th class="tr">Monto</th><th class="tr">% gasto clasificado</th></tr></thead><tbody>${data.topCats.map(x=>`<tr><td>${esc(x.label)}</td><td class="tr">${money(x.value)}</td><td class="tr">${(x.pct*100).toFixed(1)}%</td></tr>`).join('')}</tbody></table>
+      <p class="note">Reporte gerencial. Ventas sistema y flujo real se muestran separados. El efectivo se lee desde movimiento de caja y depósitos con glosa explícita de efectivo/caja; las transferencias normales no se consideran depósito de efectivo. No estima impuestos ni usa diferencias de timing como gasto.</p></main></body></html>`;
+    const w=window.open('','_blank'); if(!w){alert('El navegador bloqueó la ventana del reporte. Permite pop-ups para esta página.');return;} w.document.write(html); w.document.close();
+  };
+})();
+</script>
+
+
+<script>
+/* V20 - Reporte ordenado: primero mes, luego efectivo/gasto, comparativa más abajo e insights al final */
+(function(){
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const clean=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const money=n=>typeof fCLP==='function'?fCLP(n):('$ '+Math.round(Number(n)||0).toLocaleString('es-CL'));
+  const monthLabel=m=>typeof mLabel==='function'?mLabel(m):String(m||'');
+  const companyName=()=>({streetflags:'Street Flags',mafia:'Mafia'}[db.activeCompany]||'Empresa');
+  function add(map,k,v){k=k||'aj_sin';map[k]=(map[k]||0)+(Number(v)||0);}
+  function labelOf(cat){try{return getCatName(cat)}catch(e){return cat||'Sin clasificar'}}
+  function groupOf(cat){try{return getCatGroup(cat)}catch(e){return 'ajuste'}}
+  function splitKey(month,g){return [month,g.fecha||'',g.desc||'',Math.round(Number(g.monto)||0)].map(x=>String(x).replace(/[|]/g,'/')).join('|');}
+  function itemKey(source,month,index,obj){const raw=obj.desc||obj.comentario||'';return [source,month,index,obj.fecha||'',Math.round(Number(obj.monto)||0),clean(raw)].join('|');}
+  function manualCat(source,month,index,obj){return (db._v16Classified||{})[itemKey(source,month,index,obj)]?.cat||null;}
+  function classifyBank(month,g,i){const m=manualCat('banco',month,i,g); if(m)return {cat:m}; try{return classifyCartola(g.desc||'')}catch(e){return {cat:'aj_sin'}}}
+  function classifyCash(month,e,i){const m=manualCat('caja',month,i,e); if(m)return {cat:m,tags:[{cat:m}]}; try{return classifyCaja({comentario:e.comentario||'',monto:e.monto,fecha:e.fecha})}catch(e){return {cat:'aj_sin',tags:[{cat:'aj_sin'}]}}}
+  function isCashDeposit(desc){const t=clean(desc); if(/transbank|tbk|edenred|junaeb|pedidosya|uber|rappi|transferencia/.test(t))return false; return /deposito efectivo|deposito caja|dep efectivo|deposito local|efectivo local|caja local|cash deposit/.test(t);}
+  function expensesByCat(month){
+    const d=(db.months||{})[month]||{}, out={};
+    (d.cartola?.giros||[]).forEach((g,i)=>{const sp=(db._splits||{})[splitKey(month,g)]; if(sp&&sp.length){sp.forEach(s=>add(out,s.cat,s.amount));return;} const r=classifyBank(month,g,i); add(out,r.cat,g.monto);});
+    (d.movimiento?.egresos||[]).forEach((e,i)=>{const r=classifyCash(month,e,i), tags=r.tags||[{cat:r.cat}], share=(Number(e.monto)||0)/Math.max(1,tags.length); tags.forEach(t=>add(out,t.cat,share));});
+    return out;
+  }
+  function cashByCat(month){
+    const d=(db.months||{})[month]||{}, out={};
+    (d.movimiento?.egresos||[]).forEach((e,i)=>{const r=classifyCash(month,e,i), tags=r.tags||[{cat:r.cat}], share=(Number(e.monto)||0)/Math.max(1,tags.length); tags.forEach(t=>add(out,t.cat,share));});
+    return out;
+  }
+  function sumGroups(by,groups){return Object.entries(by).reduce((s,[cat,v])=>s+(groups.includes(groupOf(cat))?Number(v)||0:0),0);}
+  function bankCashDeposits(month){const d=(db.months||{})[month]||{};return (d.cartola?.abonos||[]).filter(a=>isCashDeposit(a.desc||'')).reduce((s,a)=>s+Number(a.monto||0),0);}
+  function conc(month){return (db._conc&&db._conc[month])||{transito:0,custodia:0};}
+  function monthMetrics(month){
+    const d=(db.months||{})[month]||{}, v=d.ventas||{}, mov=d.movimiento||{}, cartola=d.cartola||{}, by=expensesByCat(month), cash=cashByCat(month);
+    const cashOut=Number(mov.totalEgresos||0), cashIn=Number(mov.totalIngresos||0), cashDep=bankCashDeposits(month), c=conc(month);
+    const bankIn=Number(cartola.totalAbonos||0), bankOut=Number(cartola.totalGiros||0), ingresos=bankIn+cashIn, gastos=bankOut+cashOut;
+    return {month,v,mov,cartola,by,cash,cashOut,cashIn,cashDep,transito:Number(c.transito||0),custodia:Number(c.custodia||0),ventaEfectivo:Number(v.efectivo||0),ventasSistema:Number(v.ventaNeta||0),bankIn,bankOut,ingresos,gastos,flujo:ingresos-gastos,food:sumGroups(by,['costo_variable'])};
+  }
+  function compareMonths(active){const arr=Object.keys(db.months||{}).sort(); const i=arr.indexOf(active); return arr.slice(Math.max(0,i-2),i+1);}
+  function insightData(month){
+    const cur=expensesByCat(month), arr=compareMonths(month), prevMonth=arr.length>1?arr[arr.length-2]:null, prev=prevMonth?expensesByCat(prevMonth):{};
+    const total=Object.values(cur).reduce((s,v)=>s+(Number(v)||0),0), exclude=new Set(['rem_propina']);
+    const entries=Object.entries(cur).filter(([cat,val])=>!exclude.has(cat)&&val>0).sort((a,b)=>b[1]-a[1]);
+    const top=entries[0]||null, cats=new Set([...Object.keys(cur),...Object.keys(prev)]); let up=null, down=null;
+    cats.forEach(cat=>{if(exclude.has(cat))return; const c=Number(cur[cat]||0), p=Number(prev[cat]||0), d=c-p; if(d>0&&(!up||d>up.delta))up={cat,cur:c,prev:p,delta:d}; if(d<0&&(!down||d<down.delta))down={cat,cur:c,prev:p,delta:d};});
+    const pendingCats=new Set(['aj_sin','adm_rendicion','adm_rendiciones','op_rendiciones','adm_compra_tercero','ic_admin_puente']);
+    const pending=Object.entries(cur).reduce((s,[cat,val])=>s+(pendingCats.has(cat)?Number(val)||0:0),0);
+    function pct(delta,base){return base?` (${delta>0?'+':''}${(delta/base*100).toFixed(1)}%)`:'';}
+    const out=[];
+    if(top)out.push({title:'Mayor gasto del mes',text:`${labelOf(top[0])}: ${money(top[1])}${total?` (${(top[1]/total*100).toFixed(1)}% del gasto)`:''}.`});
+    if(up)out.push({title:'Mayor alza vs mes anterior',text:`${labelOf(up.cat)} subió ${money(up.delta)}${pct(up.delta,up.prev)}. Actual: ${money(up.cur)}.`});
+    if(down)out.push({title:'Mayor baja vs mes anterior',text:`${labelOf(down.cat)} bajó ${money(Math.abs(down.delta))}${pct(down.delta,down.prev)}. Actual: ${money(down.cur)}.`});
+    if(pending>0)out.push({title:'Pendiente por revisar',text:`${money(pending)} requiere clasificación o subdivisión para que el gasto quede exacto.`});
+    return out.length?out:[{title:'Sin variaciones relevantes',text:'Todavía no hay base comparable suficiente contra meses anteriores.'}];
+  }
+  function reportPayload(month){
+    const m=monthMetrics(month), by=m.by, totalExp=Object.values(by).reduce((s,v)=>s+(Number(v)||0),0);
+    const blocks=[['Comida / insumos',['costo_variable']],['Personal',['remuneraciones']],['Gastos fijos',['costo_fijo']],['Operación local',['gasto_operacional','delivery']],['Marketing',['marketing']],['Administración / finanzas',['administracion','impuestos','intercompany','ajuste']]]
+      .map(([label,gs])=>({label,total:sumGroups(by,gs)})).filter(x=>x.total>0);
+    const topCats=Object.entries(by).filter(([cat])=>cat!=='rem_propina').sort((a,b)=>b[1]-a[1]).slice(0,12).map(([cat,val])=>({cat,label:labelOf(cat),value:val,pct:totalExp?val/totalExp:0}));
+    const cashTotal=Object.values(m.cash).reduce((s,v)=>s+(Number(v)||0),0);
+    const cashRows=Object.entries(m.cash).sort((a,b)=>b[1]-a[1]).map(([cat,val])=>({label:labelOf(cat),value:val,pct:cashTotal?val/cashTotal:0}));
+    const cashPending=m.ventaEfectivo+m.cashIn-m.cashOut-m.cashDep-m.transito-m.custodia;
+    return {...m,blocks,topCats,cashRows,cashPending,insights:insightData(month),comparative:compareMonths(month).map(monthMetrics)};
+  }
+  window.v17OpenReport=function(){
+    if(!window.activeMonth||!(db.months||{})[activeMonth]){alert('No hay mes cargado para reportar.');return;}
+    const data=reportPayload(activeMonth), company=companyName(), period=monthLabel(activeMonth);
+    const cmp=data.comparative;
+    const cmpHeader=cmp.map(x=>`<th class="tr">${esc(monthLabel(x.month))}</th>`).join('');
+    const cmpRow=(label,fn)=>`<tr><td>${esc(label)}</td>${cmp.map(x=>`<td class="tr">${money(fn(x))}</td>`).join('')}</tr>`;
+    const cashRows=data.cashRows.length?data.cashRows.map(x=>`<tr><td>${esc(x.label)}</td><td class="tr">${money(x.value)}</td><td class="tr">${(x.pct*100).toFixed(1)}%</td></tr>`).join(''):`<tr><td colspan="3">Sin egresos de caja efectivo cargados.</td></tr>`;
+    const blocksRows=data.blocks.length?data.blocks.map(x=>`<tr><td>${esc(x.label)}</td><td class="tr">${money(x.total)}</td><td class="tr">${data.gastos?((x.total/data.gastos)*100).toFixed(1)+'%':'-'}</td></tr>`).join(''):`<tr><td colspan="3">Sin gastos clasificados.</td></tr>`;
+    const detailRows=data.topCats.length?data.topCats.map(x=>`<tr><td>${esc(x.label)}</td><td class="tr">${money(x.value)}</td><td class="tr">${(x.pct*100).toFixed(1)}%</td></tr>`).join(''):`<tr><td colspan="3">Sin detalle de gasto.</td></tr>`;
+    const html=`<!doctype html><html><head><meta charset="utf-8"><title>Reporte ${esc(company)} ${esc(period)}</title><style>
+      :root{color-scheme:light}body{font-family:Inter,Arial,sans-serif;margin:0;background:#fff;color:#111}.page{max-width:940px;margin:0 auto;padding:34px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid #d8d8d2;padding-bottom:18px;margin-bottom:22px}.brand{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:#555}.title{font-size:28px;font-weight:850;letter-spacing:-.04em;margin-top:4px}.period{text-align:right;font-size:12px;color:#555}.month-box{margin:12px 0 20px;padding:14px 0;border-bottom:1px solid #eee}.month-box small{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#777;font-weight:900;margin-bottom:4px}.month-box b{font-size:24px;letter-spacing:-.04em}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0 24px}.k{border:1px solid #ddd;border-radius:12px;padding:14px;background:#fff}.k small{display:block;text-transform:uppercase;letter-spacing:.09em;font-size:10px;color:#777;font-weight:800;margin-bottom:8px}.k b{font-size:20px;letter-spacing:-.04em}.section{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:900;margin:28px 0 10px}.split{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}table{width:100%;border-collapse:collapse;font-size:12px;background:#fff}th{text-align:left;border-bottom:1px solid #bbb;padding:9px;color:#777;text-transform:uppercase;letter-spacing:.08em;font-size:10px}td{border-bottom:1px solid #eee;padding:10px 9px}.tr{text-align:right}.insights{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.ins{border-top:1px solid #d8d8d2;padding:12px 0}.ins b{display:block;font-size:12px;margin-bottom:4px}.ins span{font-size:12px;color:#555;line-height:1.45}.muted{font-size:11px;color:#666;line-height:1.45;margin-top:12px}.print{position:fixed;right:20px;top:20px;background:#0f3d2e;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}@media print{.print{display:none}.page{padding:20px;max-width:none}.split{grid-template-columns:1fr 1fr}.insights{grid-template-columns:repeat(2,1fr)}body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+      </style></head><body><button class="print" onclick="print()">Guardar PDF</button><main class="page"><header><div><div class="brand">${esc(company)}</div><div class="title">Reporte mensual</div></div><div class="period">${new Date().toLocaleDateString('es-CL')}</div></header>
+      <div class="month-box"><small>Mes analizado</small><b>${esc(period)}</b></div>
+      <div class="grid"><div class="k"><small>Ventas sistema</small><b>${money(data.ventasSistema)}</b></div><div class="k"><small>Ingresos reales</small><b>${money(data.ingresos)}</b></div><div class="k"><small>Gastos pagados</small><b>${money(data.gastos)}</b></div><div class="k"><small>Flujo neto</small><b>${money(data.flujo)}</b></div></div>
+      <div class="section">Gastos por bloque</div><table><thead><tr><th>Bloque</th><th class="tr">Monto</th><th class="tr">% gastos</th></tr></thead><tbody>${blocksRows}</tbody></table>
+      <div class="section">Distribución del efectivo</div><div class="split"><table><tbody><tr><td>Venta efectivo sistema</td><td class="tr">${money(data.ventaEfectivo)}</td></tr><tr><td>Ingresos manuales a caja</td><td class="tr">${money(data.cashIn)}</td></tr><tr><td>Pagos realizados desde caja</td><td class="tr">${money(data.cashOut)}</td></tr><tr><td>Depósitos de efectivo en banco</td><td class="tr">${money(data.cashDep)}</td></tr><tr><td>Efectivo en tránsito / fondo sencillo</td><td class="tr">${money(data.transito+data.custodia)}</td></tr><tr><td><b>Pendiente de explicar</b></td><td class="tr"><b>${money(data.cashPending)}</b></td></tr></tbody></table><table><thead><tr><th>Uso caja</th><th class="tr">Monto</th><th class="tr">%</th></tr></thead><tbody>${cashRows}</tbody></table></div>
+      <div class="section">Detalle de gasto</div><table><thead><tr><th>Categoría</th><th class="tr">Monto</th><th class="tr">% gasto clasificado</th></tr></thead><tbody>${detailRows}</tbody></table>
+      <div class="section">Comparativa mensual</div><table><thead><tr><th>Indicador</th>${cmpHeader}</tr></thead><tbody>${cmpRow('Ventas sistema',x=>x.ventasSistema)}${cmpRow('Ingresos reales',x=>x.ingresos)}${cmpRow('Gastos pagados',x=>x.gastos)}${cmpRow('Comida / insumos',x=>x.food)}${cmpRow('Uso de efectivo',x=>x.cashOut)}${cmpRow('Flujo neto',x=>x.flujo)}</tbody></table>
+      <div class="section">Insights del mes</div><div class="insights">${data.insights.map(x=>`<div class="ins"><b>${esc(x.title)}</b><span>${esc(x.text)}</span></div>`).join('')}</div>
+      </main></body></html>`;
+    const w=window.open('','_blank'); if(!w){alert('El navegador bloqueó la ventana del reporte. Permite pop-ups para esta página.');return;} w.document.write(html); w.document.close();
+  };
+})();
+</script>
 </body>
 </html>
