@@ -7998,5 +7998,224 @@ document.getElementById('drop-zone').addEventListener('drop',e=>{e.preventDefaul
 })();
 </script>
 
+<script>
+/* V23 — ConsultaTransferencia Itaú + corrección cuenta puente */
+(function(){
+  const $=s=>document.querySelector(s);
+  const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+  const norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+  const catMap={ic_admin:'adm_cuenta_puente',ic_admin_puente:'adm_cuenta_puente',ic_reembolso:'adm_cuenta_puente',op_gas:'fix_gas',mk_publicidad:'mk_marketing',op_publicidad:'mk_marketing',op_banco:'adm_banco'};
+  const canon23=id=>catMap[id]||id||'corr_sin_clasificar';
+  function money23(n){try{return (typeof fCLP==='function'?fCLP(n):'$ '+Math.round(n||0).toLocaleString('es-CL'));}catch(e){return '$ '+Math.round(n||0).toLocaleString('es-CL');}}
+  function num23(v){try{return Math.abs(num(v));}catch(e){if(v===null||v===undefined||v==='')return 0;if(typeof v==='number')return Math.round(Math.abs(v));const digits=String(v).replace(/[^0-9-]/g,'');return Math.abs(parseInt(digits||'0',10));}}
+  function ensureV23(){
+    db.entities=db.entities||[]; db.categories=db.categories||[]; if(!db.months)db.months={};
+    const cats=[
+      ['fix_gas','Gas','costo_fijo','Gastos fijos'],
+      ['adm_cuenta_puente','Cuenta puente / pago por tercero','intercompany','Administración y finanzas'],
+      ['corr_sin_clasificar','Sin clasificar','correccion','Correcciones'],
+      ['fc_pan','Pan','costo_variable','Comida / insumos'],
+      ['fc_bebidas','Bebidas','costo_variable','Bebidas'],
+      ['fc_verduras','Verduras','costo_variable','Comida / insumos'],
+      ['fc_aceite','Aceite / fritura','costo_variable','Comida / insumos'],
+      ['fc_pollo','Pollo','costo_variable','Comida / insumos'],
+      ['fc_carnes','Carnes / proteínas','costo_variable','Comida / insumos'],
+      ['op_contabilidad','Contabilidad','costo_fijo','Gastos fijos'],
+      ['op_packaging','Packaging','gasto_operacional','Operación local'],
+      ['op_mantencion','Mantención','gasto_operacional','Operación local'],
+      ['delivery_propio','Delivery / repartidores','delivery','Delivery']
+    ];
+    cats.forEach(([id,name,group,bucket])=>{let c=db.categories.find(x=>(x.id||x._id)===id); if(c){c.id=c._id=id;c.name=name;c.group=group;c.bucket=bucket;c.source=c.source||'ambos';} else db.categories.push({_id:id,id,name,group,bucket,source:'ambos',parent:''});});
+    function up(name,type,cat,aliases,kws){
+      const nk=norm(name); let e=db.entities.find(x=>norm(x.name)===nk || (x.aliases||[]).some(a=>norm(a)===nk));
+      if(!e){e={_id:'e_v23_'+Date.now()+'_'+Math.floor(Math.random()*99999),name,type,cat,aliases:[],kws:[]};db.entities.push(e);} 
+      e.type=type||e.type||'proveedor'; e.cat=canon23(cat||e.cat); e.aliases=Array.from(new Set([...(e.aliases||[]),...(aliases||[])].filter(Boolean))); e.kws=Array.from(new Set([...(e.kws||[]),...(kws||[])].map(norm).filter(Boolean)));
+      return e;
+    }
+    up('Ideal','proveedor','fc_pan',['Ideal','Ideal Zofri'],['ideal']);
+    up('Panadería Omar Hernández','proveedor','fc_pan',['Paanderia Y Pasteleria Omar Hernandez','Panaderia Omar Hernandez','Omar Hernandez'],['panaderia omar','omar hernandez']);
+    up('Ewald Zippel','servicio','fix_arriendo',['Eald Zippel Y Cia Limitada','Ewald Zippel Y Cia Limitada','Eald Zippel'],['ewald','eald zippel']);
+    up('Abastible','servicio','fix_gas',['Hector Salas','Hctor Salas','Abastible','Gasco','Lipigas'],['gas','abastible','hector salas','hctor salas']);
+    up('Embotelladora Iquique','proveedor','fc_bebidas',['Embotelladora Iquique Sa','Embotelladora','Coca Cola'],['embotelladora','coca cola']);
+    up('Hugo Condori','proveedor','fc_carnes',['Hugo Condori','Hugo Cochi'],['hugo condori','hugo cochi']);
+    up('Fernando Márquez','proveedor','fc_carnes',['Fernando Marquez'],['fernando marquez']);
+    up('Carnes Aránguiz','proveedor','fc_carnes',['Comercial Aranguiz Y Cialtda','Comercial Aranguiz','Aranguiz'],['aranguiz']);
+    up('Agrosuper','proveedor','fc_pollo',['Agrosuper Comercial','Agrosuper'],['agrosuper']);
+    up('Distribuidora Covadonga','proveedor','fc_aceite',['Distribuidora Covadonga Spa','Covadonga'],['covadonga']);
+    up('Distribuidora Yimk','proveedor','fc_aceite',['Distribuidora Yimk Spa','Yimk'],['yimk']);
+    up('Comercializadora Agrícola Rodrigo','proveedor','fc_verduras',['Comercializadora Agricola Rodrigo'],['agricola rodrigo','comercializadora agricola']);
+    up('Reinaldo González','proveedor','fc_verduras',['Reinaldo Gonzalez'],['reinaldo gonzalez']);
+    up('Minuto Verde','proveedor','fc_papas',['Minuto Verde'],['minuto verde']);
+    up('Iterlog','servicio','op_aseo',['Iterlog Spa','Iterlog'],['iterlog']);
+    up('Katalyn Pack','proveedor','op_packaging',['Katalyn Pack'],['katalyn pack']);
+    up('Asesoría y Auditoría','servicio','op_contabilidad',['Asesoria Y Auditoria'],['asesoria y auditoria']);
+    up('José Damian','servicio','op_mantencion',['Jose Damian'],['jose damian']);
+    up('Javier Morales','proveedor','delivery_propio',['Javier Morales'],['javier morales','deli javier']);
+    const ch=up('Christopher Müller','admin','adm_cuenta_puente',['Christopher Muller','Christopher Mu','Christopher Müller'],['christopher','muller','müller']); ch.area='administracion'; ch.team='fijo'; ch.pay='puente';
+    db.entities.forEach(e=>{e.cat=canon23(e.cat); if(e.cat==='adm_cuenta_puente' && e.type!=='admin' && !/christopher|muller|müller/i.test(e.name||'')){ e.cat=e.type==='trabajador'?'rem_sueldo':'corr_sin_clasificar'; }});
+    if(typeof saveDB==='function')saveDB();
+  }
+  function findEntByText(text){
+    const t=norm(text); if(!t)return null;
+    let best=null,score=0;
+    (db.entities||[]).forEach(e=>{
+      const arr=[e.name,...(e.aliases||[]),...(e.kws||[])].filter(Boolean);
+      arr.forEach(a=>{const n=norm(a); if(!n||n.length<3)return; if(t===n || t.includes(n) || n.includes(t)){const s=n.length+(t===n?100:0); if(s>score){score=s;best=e;}}});
+    });
+    return best;
+  }
+  function inferCatByText(text, ent){
+    const t=norm(text);
+    if(ent){
+      const et=ent.type||'proveedor';
+      if(et==='trabajador'){
+        if(/propina|tips|gratificacion/.test(t))return 'rem_propina';
+        if(/bono|incentivo/.test(t))return 'rem_bono';
+        if(/anticipo|adelanto/.test(t))return 'rem_anticipo';
+        if(/finiquito/.test(t))return 'rem_finiquito';
+        if(/previred|cotizacion/.test(t))return 'rem_previred';
+        return 'rem_sueldo';
+      }
+      if(et==='admin'){
+        if(/sueldo|honorario|liquidacion/.test(t))return 'rem_admin_sueldo';
+        if(/propina|tips/.test(t))return 'rem_propina';
+        return 'adm_cuenta_puente';
+      }
+      return canon23(ent.cat);
+    }
+    if(/abastible|lipigas|gasco|\bgas\b|hector salas|hctor salas/.test(t))return 'fix_gas';
+    if(/ewald|eald zippel|arriendo/.test(t))return 'fix_arriendo';
+    if(/embotelladora|coca cola|bebida/.test(t))return 'fc_bebidas';
+    if(/panaderia|paanderia|omar hernandez|\bpan\b|ideal/.test(t))return 'fc_pan';
+    if(/minuto verde|papa/.test(t))return 'fc_papas';
+    if(/covadonga|yimk|aceite/.test(t))return 'fc_aceite';
+    if(/agricola|reinaldo|verdura|vegetal/.test(t))return 'fc_verduras';
+    if(/hugo condori|fernando marquez|aranguiz|carne/.test(t))return 'fc_carnes';
+    if(/agrosuper|pollo/.test(t))return 'fc_pollo';
+    if(/javier morales|delivery|repartidor/.test(t))return 'delivery_propio';
+    if(/iterlog|aseo/.test(t))return 'op_aseo';
+    if(/katalyn|pack|envase|bolsa/.test(t))return 'op_packaging';
+    if(/asesoria|auditoria|contabilidad/.test(t))return 'op_contabilidad';
+    if(/jose damian|mantencion|reparacion/.test(t))return 'op_mantencion';
+    return 'corr_sin_clasificar';
+  }
+  function excelDateParts23(v){
+    if(typeof v==='number' && v>40000){const ms=Math.round((v-25569)*86400000);const d=new Date(ms);const dd=String(d.getUTCDate()).padStart(2,'0'), mm=String(d.getUTCMonth()+1).padStart(2,'0'), yy=d.getUTCFullYear();const hh=String(d.getUTCHours()).padStart(2,'0'), mi=String(d.getUTCMinutes()).padStart(2,'0');return {short:`${dd}/${mm}`,full:`${dd}/${mm}/${yy}`,time:`${hh}:${mi}`,key:`${dd}/${mm}`};}
+    const s=String(v||'').trim(); const m=s.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/); if(m){const dd=String(+m[1]).padStart(2,'0'), mm=String(+m[2]).padStart(2,'0');return {short:`${dd}/${mm}`,full:m[3]?`${dd}/${mm}/${m[3]}`:`${dd}/${mm}`,time:'',key:`${dd}/${mm}`};}
+    return {short:'',full:s,time:'',key:''};
+  }
+  window.v23ParseTransferencias=function(rows){
+    rows=rows||[]; let hi=-1;
+    for(let i=0;i<rows.length;i++){const r=(rows[i]||[]).map(norm); if(r.includes('fecha')&&r.includes('nombre')&&r.includes('monto')&&r.includes('estado')){hi=i;break;}}
+    if(hi<0)return [];
+    const hdr=(rows[hi]||[]).map(norm); const ix=name=>hdr.findIndex(h=>h===name||h.includes(name));
+    const cFecha=ix('fecha'), cRut=ix('rut'), cNombre=ix('nombre'), cBanco=ix('banco destino'), cMonto=ix('monto'), cEstado=ix('estado'), cCodigo=ix('codigo transferencia');
+    const out=[];
+    for(let i=hi+1;i<rows.length;i++){
+      const r=rows[i]||[]; const nombre=String(r[cNombre]||'').trim(); const monto=num23(r[cMonto]); const estado=String(r[cEstado]||'').trim();
+      if(!nombre||monto<1000)continue; if(estado && !/^ok$/i.test(estado))continue;
+      const dp=excelDateParts23(r[cFecha]); const ent=findEntByText(nombre); const cat=inferCatByText(nombre,ent);
+      out.push({fecha:dp.short,fechaFull:dp.full,hora:dp.time,dateKey:dp.key,rut:String(r[cRut]||'').trim(),nombre,banco:String(r[cBanco]||'').trim(),monto,estado:estado||'Ok',codigo:String(r[cCodigo]||'').trim(),entityId:ent?ent._id:'',cat});
+    }
+    return out;
+  };
+  window.v23EnrichCartolaWithTransfers=function(cartola, transfers){
+    cartola=cartola||{}; cartola.giros=cartola.giros||[]; cartola.transferenciasRealizadas=transfers||[]; const used=new Set(); let matched=0;
+    (transfers||[]).forEach((t,ti)=>{
+      let best=-1;
+      for(let i=0;i<cartola.giros.length;i++){
+        if(used.has(i))continue; const g=cartola.giros[i]; if(Math.round(Number(g.monto)||0)!==Math.round(t.monto))continue;
+        const gdate=String(g.fecha||'').slice(0,5); if(t.dateKey && gdate && gdate!==t.dateKey)continue;
+        best=i; break;
+      }
+      if(best<0){
+        const sameAmt=cartola.giros.map((g,i)=>({g,i})).filter(x=>!used.has(x.i)&&Math.round(Number(x.g.monto)||0)===Math.round(t.monto));
+        if(sameAmt.length===1)best=sameAmt[0].i;
+      }
+      if(best>=0){
+        const g=cartola.giros[best]; used.add(best); matched++;
+        if(!g.descOriginal)g.descOriginal=g.desc||'';
+        g.transferencia=t; g.to=t.nombre; g.rut=t.rut; g.bancoDestino=t.banco; g.codigoTransferencia=t.codigo; g.catSugerida=t.cat; g.entityIdSugerida=t.entityId;
+        g.desc=`Transferencia a ${t.nombre}`;
+      }
+    });
+    cartola.transferenciasNoCalzadas=(transfers||[]).filter((_,i)=>![...used].includes(i));
+    cartola.transferenciasMatched=matched;
+    return cartola;
+  };
+  function isTransferFileName(name){const n=norm(name); return (n.includes('consulta')&&n.includes('transfer')) || n.includes('consultatransferencia') || n.includes('transferencias realizadas');}
+  function ensureTransferUploadUi(){
+    const grid=$('.uf-grid'); if(grid && !$('#uf-t'))grid.insertAdjacentHTML('beforeend','<div class="uf optional" id="uf-t"><div class="fn">Transferencias realizadas</div><div class="fs">Opcional · mejora la clasificación</div></div>');
+    const dz=$('#drop-zone p'); if(dz && !/ConsultaTransferencia/i.test(dz.textContent))dz.textContent='Ventas_*.xls · Movimiento_Efectivo_*.xls · Cartola_*.xls · ConsultaTransferencia.xls opcional';
+    const sub=$('#page-upload .page-sub'); if(sub && !/transferencias/i.test(sub.textContent))sub.textContent='Ventas · Movimiento efectivo · Cartola · Transferencias realizadas opcional';
+  }
+  const oldHandle=window.handleFiles||handleFiles;
+  handleFiles=window.handleFiles=function(files){
+    ensureV23(); ensureTransferUploadUi(); if(!staged.t)staged.t=null;
+    let detectedMonth=null; let onlyTransfer=true;
+    Array.from(files).forEach(f=>{
+      const n=f.name.toLowerCase();
+      if(n.includes('ventas_') || n.startsWith('ventas')){staged.v=f; setUF('uf-v',f.name,'ok'); onlyTransfer=false;}
+      else if(n.includes('movimiento_efectivo') || n.includes('movimiento efectivo')){staged.m=f; setUF('uf-m',f.name,'ok'); onlyTransfer=false;}
+      else if(n.includes('cartola_') || n.startsWith('cartola')){staged.c=f; setUF('uf-c',f.name,'ok'); onlyTransfer=false;}
+      else if(isTransferFileName(f.name)){staged.t=f; setUF('uf-t',f.name,'ok');}
+      else {showFileWarning(f.name); onlyTransfer=false;}
+      const d=detectMonthFromFilename(f.name); if(d&&!detectedMonth)detectedMonth=d;
+    });
+    const now=new Date(); let year=now.getFullYear(), month=now.getMonth()+1, autoDetected=false;
+    if(detectedMonth){ if(typeof detectedMonth==='object'){year=detectedMonth.year;month=detectedMonth.month;} else {month=detectedMonth;year=now.getFullYear();} autoDetected=true; }
+    else if(onlyTransfer && activeMonth){const p=activeMonth.split('-'); year=+p[0]; month=+p[1]; autoDetected=true;}
+    const inp=$('#up-month'); if(inp)inp.value=`${year}-${String(month).padStart(2,'0')}`;
+    const hint=$('#up-month-hint'); if(hint){hint.style.display=autoDetected?'block':'none'; hint.textContent=onlyTransfer?'Se usará el mes activo para anexar el detalle de transferencias. Puedes cambiarlo si corresponde.':'Período detectado automáticamente desde el nombre del archivo. Puedes cambiarlo si es incorrecto.';}
+    const ready=(staged.v&&staged.m&&staged.c)||staged.t; const act=$('#up-actions'); if(act)act.style.display=ready?'flex':'none'; const w=$('#up-warning'); if(w)w.style.display='none';
+  };
+  const oldShow=window.showFileWarning||showFileWarning;
+  showFileWarning=window.showFileWarning=function(name){ oldShow(name); const p=$('#up-warning-text')||$('#up-warning p'); if(p)p.textContent=`"${name}" no reconocido. Se esperan: Ventas_*.xls, Movimiento_Efectivo_*.xls, Cartola_*.xls o ConsultaTransferencia.xls`; };
+  async function processOnlyTransfers(mkey, btn){
+    if(!db.months[mkey]){alert('Primero carga el mes normal con ventas, movimiento efectivo y cartola. Luego puedes anexar ConsultaTransferencia.xls para mejorar la clasificación.');return false;}
+    const rows=await readFile(staged.t); const trs=v23ParseTransferencias(rows); if(!trs.length){alert('No se encontraron transferencias OK en el archivo ConsultaTransferencia.');return false;}
+    const cartola=db.months[mkey].cartola||{}; v23EnrichCartolaWithTransfers(cartola,trs); db.months[mkey].cartola=cartola; db.months[mkey].files=db.months[mkey].files||{}; db.months[mkey].files.t=staged.t.name; db.months[mkey].transferenciasLoadedAt=Date.now();
+    saveDB(); activeMonth=mkey; alert(`Detalle de transferencias anexado.\n\nTransferencias leídas: ${trs.length}\nCalzadas con cartola: ${cartola.transferenciasMatched||0}\n\nAhora la clasificación usará el nombre real del destinatario.`);
+    staged.t=null; const uf=$('#uf-t'); if(uf){uf.className='uf optional';uf.querySelector('.fn').textContent='Transferencias realizadas';uf.querySelector('.fs').textContent='Opcional · mejora la clasificación';} const act=$('#up-actions'); if(act)act.style.display='none'; if(typeof renderHistory==='function')renderHistory(); if(typeof nav==='function')nav('proveedores'); if(typeof v22OpenReview==='function')setTimeout(v22OpenReview,0); return true;
+  }
+  const oldProcess=window.processFiles||processFiles;
+  processFiles=window.processFiles=async function(){
+    ensureV23(); ensureTransferUploadUi(); const mkey=$('#up-month')?.value; if(!mkey){alert('Selecciona el período');return;} const btn=document.querySelector('#up-actions .btn-primary'); if(btn){btn.textContent='Procesando…';btn.disabled=true;}
+    try{
+      const onlyT=staged.t && !(staged.v&&staged.m&&staged.c);
+      if(onlyT){await processOnlyTransfers(mkey,btn);return;}
+      if(!(staged.v&&staged.m&&staged.c)){alert('Faltan ventas, movimiento efectivo o cartola. El archivo de transferencias es opcional, no reemplaza la cartola.');return;}
+      const [rv,rm,rc,rt]=await Promise.all([readFile(staged.v),readFile(staged.m),readFile(staged.c),staged.t?readFile(staged.t):Promise.resolve(null)]);
+      const errs=[]; if(!rv.some(r=>String(r[0]||'').includes('Venta Bruta')))errs.push('Ventas: no se encontró "Venta Bruta" — verifica que sea el archivo correcto');
+      if(!rm.some(r=>/(egreso|ingreso) de dinero/i.test(String(r[3]||''))))errs.push('Movimiento efectivo: no se encontró columna de tipo egreso/ingreso — verifica el archivo');
+      const dateRows=rc.filter((r,i)=>i>=27&&/^\d{2}\/\d{2}$/.test(String(r[0]||'').trim())); if(dateRows.length<3)errs.push('Cartola: no se encontraron fechas en el formato esperado — verifica que sea la cartola Itaú');
+      if(errs.length){alert('Errores de validación:\n\n'+errs.join('\n\n'));return;}
+      const ventas=parseVentas(rv); const movimiento=parseMovimiento(rm); const cartola=parseCartola(rc); const transfers=rt?v23ParseTransferencias(rt):[]; if(transfers.length)v23EnrichCartolaWithTransfers(cartola,transfers);
+      const verif=`Verificación de datos para ${mLabel(mkey)}:\n\n`+`Ventas: Venta Neta ${fCLP(ventas.ventaNeta)}\n`+`Movimiento: ${movimiento.egresos.length} egresos por ${fCLP(movimiento.totalEgresos)}\n`+`Cartola: ${cartola.giros.length} transferencias por ${fCLP(cartola.totalGiros)}\n`+(transfers.length?`Transferencias detalladas: ${transfers.length} leídas · ${cartola.transferenciasMatched||0} calzadas\n`:``)+`Cartola: Saldo final ${fCLP(cartola.saldoFinal)}\n\n¿Los montos se ven correctos?`;
+      if(!confirm(verif))return;
+      const [mYear,mMonth]=mkey.split('-').map(Number); function matchesMonth(fecha){if(!fecha)return true;const parts=fecha.replace(/-/g,'/').split('/');if(parts.length>=2){const mm=parseInt(parts[1],10);if(parts.length===2)return mm===mMonth;const yy=parseInt(parts[2],10),yyyy=yy<50?2000+yy:1900+yy;return mm===mMonth&&yyyy===mYear;}return true;}
+      movimiento.egresos=movimiento.egresos.filter(e=>matchesMonth(e.fecha)); movimiento.ingresos=movimiento.ingresos.filter(e=>matchesMonth(e.fecha)); movimiento.totalEgresos=movimiento.egresos.reduce((s,e)=>s+e.monto,0); movimiento.totalIngresos=movimiento.ingresos.reduce((s,e)=>s+e.monto,0);
+      db.months[mkey]={ventas,movimiento,cartola,loadedAt:Date.now(),files:{v:staged.v.name,m:staged.m.name,c:staged.c.name,t:staged.t?staged.t.name:''}}; saveDB(); activeMonth=mkey;
+      staged={v:null,m:null,c:null,t:null}; ['uf-v','uf-m','uf-c'].forEach(id=>{const el=$('#'+id); if(el){el.className='uf';el.querySelector('.fn').textContent=id==='uf-v'?'Ventas':id==='uf-m'?'Movimiento efectivo':'Cartola';el.querySelector('.fs').textContent='Esperando…';}}); const uft=$('#uf-t'); if(uft){uft.className='uf optional';uft.querySelector('.fn').textContent='Transferencias realizadas';uft.querySelector('.fs').textContent='Opcional · mejora la clasificación';} const act=$('#up-actions'); if(act)act.style.display='none'; renderHistory(); nav('dashboard');
+    }catch(e){console.error(e);alert('Error al procesar: '+e.message);} finally {if(btn){btn.textContent='Procesar y guardar';btn.disabled=false;}}
+  };
+  const oldClass=window.classifyCartola||classifyCartola;
+  classifyCartola=window.classifyCartola=function(desc){
+    ensureV23(); const raw=String(desc||''); const ent=findEntByText(raw); const cat=inferCatByText(raw,ent);
+    if(ent){return {entity:ent,cat:canon23(cat),label:ent.name};}
+    if(cat!=='corr_sin_clasificar')return {entity:null,cat:canon23(cat),label:(typeof getCatName==='function'?getCatName(cat):cat)};
+    const old=oldClass?oldClass(raw):{entity:null,cat:'corr_sin_clasificar',label:raw.substring(0,38)};
+    if(old && canon23(old.cat)==='adm_cuenta_puente' && !/christopher|muller|müller/i.test(raw)){return {entity:old.entity||null,cat:'corr_sin_clasificar',label:'Por clasificar'};}
+    if(old)old.cat=canon23(old.cat); return old;
+  };
+  function patchLoadedMonths(){
+    ensureV23(); Object.values(db.months||{}).forEach(d=>{const giros=d?.cartola?.giros||[]; giros.forEach(g=>{if(g.transferencia&&g.transferencia.nombre){if(!g.descOriginal)g.descOriginal=g.desc||''; g.desc='Transferencia a '+g.transferencia.nombre; g.to=g.transferencia.nombre;}});});
+  }
+  const oldV22Open=window.v22OpenReview||window.v21OpenReview; window.v22OpenReview=function(){patchLoadedMonths(); if(oldV22Open)return oldV22Open(); if(typeof nav==='function')nav('proveedores');}; window.v23OpenReview=window.v22OpenReview;
+  const oldNav=window.nav; if(oldNav){window.nav=function(page){const r=oldNav.apply(this,arguments);setTimeout(()=>{try{if(page==='upload')ensureTransferUploadUi();patchLoadedMonths();}catch(e){}},0);return r;};}
+  ensureV23(); ensureTransferUploadUi(); patchLoadedMonths();
+})();
+</script>
+
 </body>
 </html>
