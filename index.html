@@ -6775,5 +6775,264 @@ document.getElementById('drop-zone').addEventListener('drop',e=>{e.preventDefaul
 })();
 </script>
 
+
+
+<script>
+/* V16 — Cola real de transferencias: desaparece al clasificar, propinas mejor detectadas, sin concepto de comisión de plataformas */
+(function(){
+  const $=(sel,root=document)=>root.querySelector(sel);
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const clean=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const canon=window.canon || (id=>id||'aj_sin');
+  const fmoney=n=>typeof fCLP==='function'?fCLP(n):('$ '+Math.round(Number(n)||0).toLocaleString('es-CL'));
+  const monthLabel=m=>typeof mLabel==='function'?mLabel(m):m;
+
+  function ensureV16Store(){
+    db._v16Classified=db._v16Classified||{};
+    db._v16ReviewSkipped=db._v16ReviewSkipped||{};
+    return db._v16Classified;
+  }
+  function itemKey(item){
+    return [item.source,item.month,item.index,item.fecha||'',Math.round(item.monto||0),clean(item.raw)].join('|');
+  }
+  function findEnt(raw){
+    const t=clean(raw);
+    if(!t)return null;
+    const ents=db.entities||[];
+    for(const e of ents){
+      for(const a of (e.aliases||[])){
+        const aa=clean(a);
+        if(aa && (t.includes(aa)||aa.includes(t))) return e;
+      }
+      for(const k of (e.kws||[])){
+        const kk=clean(k);
+        if(kk && (t.includes(kk)||kk.includes(t))) return e;
+      }
+    }
+    return null;
+  }
+  function quickCat(raw){
+    const t=clean(raw);
+    if(/propina|propinas|tip|tips|gratuidad|gratificacion/.test(t))return 'rem_propina';
+    if(/sueldo|liquidacion|remuneracion|honorario/.test(t))return 'rem_sueldo';
+    if(/bono|incentivo/.test(t))return 'rem_bono';
+    if(/anticipo/.test(t))return 'rem_anticipo';
+    if(/finiquito/.test(t))return 'rem_finiquito';
+    if(/previred|imposicion|imposiciones/.test(t))return 'rem_previred';
+    if(/cge|luz|electricidad/.test(t))return 'fix_luz';
+    if(/agua|aguas del altiplano/.test(t))return 'fix_agua';
+    if(/movistar|internet|telefono|wifi|telefonia/.test(t))return 'fix_internet';
+    if(/ewald|arriendo/.test(t))return 'fix_arriendo';
+    if(/brios|spice|marketing|publicidad|meta|facebook|instagram|google ads/.test(t))return 'mk_marketing';
+    if(/deliverit|packaging|caja|cajas|vaso|vasos|bolsa|servilleta|envase|papel/.test(t))return 'op_packaging';
+    if(/javier|delivery|deli\b|repart|despacho/.test(t))return 'delivery_propio';
+    if(/carne|carnes|aranguiz|sudamericanas|frigorifico|frigorificos|hugo cochi|fernando marquez|ideal frigorificos/.test(t))return 'fc_carnes';
+    if(/pollo/.test(t))return 'fc_pollo';
+    if(/pan|panader/.test(t))return 'fc_pan';
+    if(/queso|lacteo|lacteos|leche|cheddar|mozzarella/.test(t))return 'fc_lacteos';
+    if(/verdura|lechuga|tomate|cebolla|palta|repollo|vegetal/.test(t))return 'fc_verduras';
+    if(/papa|minuto verde|papas/.test(t))return 'fc_papas';
+    if(/aceite|yimk|covadonga/.test(t))return 'fc_aceite';
+    if(/bebida|coca|embotelladora|sprite|agua mineral/.test(t))return 'fc_bebidas';
+    if(/aseo|limpieza|detergente|cloro|desinfectante/.test(t))return 'op_aseo';
+    if(/copec|icb/.test(t))return 'adm_compra_tercero';
+    if(/software|toteat|saas|licencia|sistema/.test(t))return 'fix_software';
+    return 'aj_sin';
+  }
+  function titleFromRaw(raw){
+    let s=String(raw||'').replace(/^transferencia\s+(a|de)\s+/i,'').replace(/^pago\s+(a|de)\s+/i,'').replace(/\s+/g,' ').trim();
+    return s.split(' ').filter(Boolean).slice(0,5).map(w=>w.length<4?w.toUpperCase():w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ')||'Nueva entidad';
+  }
+  function existingClass(item){
+    const key=itemKey(item);
+    const manual=ensureV16Store()[key];
+    if(manual)return manual;
+    // Mantiene compatibilidad con futuras versiones si se agrega otra tienda de clasificación.
+    return null;
+  }
+  function isPending(item){
+    if(existingClass(item))return false;
+    const q=quickCat(item.raw);
+    if(q && q!=='aj_sin')return false;
+    const ent=findEnt(item.raw);
+    if(ent && canon(ent.cat||'')!=='aj_sin')return false;
+    try{
+      if(item.source==='banco' && typeof classifyCartola==='function'){
+        const r=classifyCartola(item.raw||'');
+        if(r && canon(r.cat)!=='aj_sin')return false;
+      }
+      if(item.source==='caja' && typeof classifyCaja==='function'){
+        const r=classifyCaja({comentario:item.raw||'',monto:item.monto,fecha:item.fecha});
+        if(r && canon(r.cat)!=='aj_sin')return false;
+      }
+    }catch(e){}
+    return true;
+  }
+
+  const BUCKETS=[
+    ['Comida / insumos',[['fc_carnes','Carnes'],['fc_pollo','Pollo'],['fc_pan','Pan'],['fc_lacteos','Lácteos'],['fc_verduras','Verduras'],['fc_papas','Papas'],['fc_aceite','Aceite'],['fc_abarrotes','Abarrotes'],['fc_salsas','Salsas'],['fc_bebidas','Bebidas']]],
+    ['Fijos',[['fix_arriendo','Arriendo'],['fix_luz','Luz'],['fix_agua','Agua'],['fix_internet','Internet'],['fix_contabilidad','Contabilidad'],['fix_software','Software']]],
+    ['Operación',[['op_packaging','Packaging'],['op_aseo','Aseo'],['op_mantencion','Mantención'],['op_reparaciones','Reparaciones'],['delivery_propio','Delivery']]],
+    ['Personal',[['rem_sueldo','Sueldo'],['rem_propina','Propinas'],['rem_bono','Bono'],['rem_anticipo','Anticipo'],['rem_finiquito','Finiquito'],['rem_previred','Previred']]],
+    ['Marketing / admin',[['mk_marketing','Marketing'],['mk_diseno','Diseño / imprenta'],['adm_admin','Gastos administrativos'],['adm_cuenta_puente','Cuenta puente'],['adm_compra_tercero','Compra por tercero'],['aj_sin','Sin clasificar']]]
+  ];
+
+  let state={idx:0,monthMode:'active',cat:'fc_carnes',type:'proveedor',saving:false,lastKey:''};
+  window.v16State=state;
+
+  function collect(){
+    const months=Object.keys(db.months||{}).sort().reverse();
+    const selected=state.monthMode==='all'?months:(activeMonth&&db.months[activeMonth]?[activeMonth]:months.slice(0,1));
+    const out=[];
+    for(const month of selected){
+      const d=db.months[month]||{};
+      (d.cartola?.giros||[]).forEach((g,i)=>{
+        const item={source:'banco',month,index:i,fecha:g.fecha||'',raw:g.desc||'',monto:Number(g.monto)||0};
+        if(isPending(item))out.push(item);
+      });
+      // Transferencias es principalmente banco; dejamos caja solo si viene sin clasificar y con monto relevante.
+      (d.movimiento?.egresos||[]).forEach((e,i)=>{
+        const item={source:'caja',month,index:i,fecha:e.fecha||'',raw:e.comentario||'Sin glosa',monto:Number(e.monto)||0};
+        if(item.monto>=1000 && isPending(item))out.push(item);
+      });
+    }
+    out.sort((a,b)=>String(b.month).localeCompare(String(a.month))||b.monto-a.monto);
+    return out.slice(0,300);
+  }
+  function catButtons(selected){
+    return BUCKETS.map(([bucket,cats])=>`<div class="v16-cat-group"><div>${esc(bucket)}</div><section>${cats.map(([id,label])=>`<button type="button" class="${canon(id)===canon(selected)?'active':''}" onclick="v16SetCat('${esc(id)}')">${esc(label)}</button>`).join('')}</section></div>`).join('');
+  }
+  function optionsForType(type){
+    const ents=(db.entities||[]).filter(e=>{
+      const et=e.type||'proveedor';
+      if(type==='trabajador')return et==='trabajador';
+      if(type==='admin')return et==='admin';
+      if(type==='servicio')return et==='servicio'||et==='proveedor';
+      return ['proveedor','servicio','admin','intercompany','otro'].includes(et);
+    }).sort((a,b)=>String(a.name).localeCompare(String(b.name),'es'));
+    return '<option value="">Crear nuevo</option>'+ents.slice(0,180).map(e=>`<option value="${esc(e._id)}">${esc(e.name)}</option>`).join('');
+  }
+  function guessType(cat){
+    if(/^rem_/.test(cat))return 'trabajador';
+    if(/^fix_/.test(cat))return 'servicio';
+    if(/^adm_cuenta|^adm_compra/.test(cat))return 'admin';
+    return state.type||'proveedor';
+  }
+  window.v16SetCat=function(cat){state.cat=cat; state.type=guessType(cat); render(true);};
+  window.v16SetType=function(type){state.type=type; render(true);};
+  window.v16SetIdx=function(i){state.idx=Number(i)||0; render(true);};
+  window.v16ToggleMonth=function(mode){state.monthMode=mode; state.idx=0; render();};
+  window.v16Skip=function(){const items=collect(); if(!items.length)return; state.idx=(state.idx+1)%items.length; render(true);};
+
+  window.v16Save=function(){
+    if(state.saving)return;
+    const items=collect(); const item=items[state.idx]; if(!item)return;
+    state.saving=true;
+    const box=$('#v16-current'); if(box)box.classList.add('is-saving');
+    const type=$('#v16-type')?.value||state.type||'proveedor';
+    const existing=$('#v16-existing')?.value||'';
+    const cat=canon(state.cat||quickCat(item.raw)||'aj_sin');
+    const name=($('#v16-name')?.value||titleFromRaw(item.raw)).trim()||titleFromRaw(item.raw);
+    const exact=String(item.raw||'').trim();
+    const cleaned=titleFromRaw(item.raw);
+    let ent=(db.entities||[]).find(e=>e._id===existing);
+    if(ent){
+      if(type && type!=='servicio')ent.type=type;
+      if(type==='servicio')ent.type=ent.type||'servicio';
+      ent.cat=cat;
+      if(item.source==='banco')ent.aliases=Array.from(new Set([...(ent.aliases||[]), exact, cleaned].filter(Boolean)));
+      else ent.kws=Array.from(new Set([...(ent.kws||[]), exact, clean(exact)].filter(Boolean)));
+    }else{
+      ent={_id:'e'+Date.now()+'_'+Math.floor(Math.random()*9999),name,type,cat,aliases:[],kws:[]};
+      if(type==='admin'){ent.area='administracion';ent.team='fijo';ent.pay='puente';}
+      if(type==='trabajador'){ent.area='cocina';ent.team='fijo';ent.pay=cat==='rem_propina'?'propina':cat==='rem_bono'?'bono':cat==='rem_anticipo'?'anticipo':'sueldo';}
+      if(item.source==='banco')ent.aliases=Array.from(new Set([exact, cleaned].filter(Boolean)));
+      else ent.kws=Array.from(new Set([exact, clean(exact)].filter(Boolean)));
+      db.entities=db.entities||[]; db.entities.push(ent);
+    }
+    ensureV16Store()[itemKey(item)]={cat,entityId:ent._id,name:ent.name,type,ts:Date.now()};
+    if(typeof saveDB==='function')saveDB();
+    setTimeout(function(){state.saving=false; state.idx=0; render();},180);
+  };
+
+  function render(){
+    const host=$('#prov-list'); if(!host)return;
+    const items=collect();
+    if(!items.length){host.innerHTML=`<div class="v16-empty"><b>Todo clasificado</b><span>No hay transferencias pendientes en ${state.monthMode==='all'?'todos los meses':'el mes activo'}.</span></div>`; return;}
+    if(state.idx>=items.length)state.idx=0;
+    const item=items[state.idx];
+    const key=itemKey(item);
+    if(state.lastKey!==key){state.cat=quickCat(item.raw)||'fc_carnes'; if(state.cat==='aj_sin')state.cat='fc_carnes'; state.type=guessType(state.cat); state.lastKey=key;}
+    const suggestedName=titleFromRaw(item.raw);
+    const queue=items.slice(0,24);
+    host.innerHTML=`
+      <div class="v16-head"><div><b>Clasificar transferencias</b><span>${items.length} pendientes · ${state.monthMode==='all'?'Todos los meses':'Mes activo'}</span></div><div class="v16-seg"><button class="${state.monthMode==='active'?'active':''}" onclick="v16ToggleMonth('active')">Mes activo</button><button class="${state.monthMode==='all'?'active':''}" onclick="v16ToggleMonth('all')">Todos</button></div></div>
+      <div class="v16-grid">
+        <section id="v16-current" class="v16-main">
+          <div class="v16-exp"><div><small>${esc(monthLabel(item.month))} · ${item.source==='banco'?'Banco':'Caja'} · ${esc(item.fecha||'sin fecha')}</small><h3>${esc(item.raw||'Sin glosa')}</h3></div><strong>${fmoney(item.monto)}</strong></div>
+          <div class="v16-line"><label>Tipo</label><select id="v16-type" onchange="v16SetType(this.value)"><option value="proveedor" ${state.type==='proveedor'?'selected':''}>Proveedor</option><option value="servicio" ${state.type==='servicio'?'selected':''}>Servicio / fijo</option><option value="admin" ${state.type==='admin'?'selected':''}>Cuenta puente</option><option value="trabajador" ${state.type==='trabajador'?'selected':''}>Trabajador</option><option value="otro" ${state.type==='otro'?'selected':''}>Otro</option></select></div>
+          <div class="v16-line"><label>Entidad</label><select id="v16-existing">${optionsForType(state.type)}</select></div>
+          <div class="v16-line"><label>Nombre</label><input id="v16-name" value="${esc(suggestedName)}" onkeydown="if(event.key==='Enter'){event.preventDefault();v16Save();}"></div>
+          <div class="v16-cats">${catButtons(state.cat)}</div>
+          <div class="v16-actions"><button class="btn" onclick="v16Skip()">Saltar</button><button class="btn btn-primary" onclick="v16Save()">Guardar y siguiente</button></div>
+        </section>
+        <aside class="v16-queue">${queue.map((q,i)=>`<button class="${i===state.idx?'active':''}" onclick="v16SetIdx(${i})"><b>${fmoney(q.monto)}</b><span>${esc(q.raw||'Sin glosa')}</span></button>`).join('')}</aside>
+      </div>`;
+  }
+
+  const oldClassifyCartola=window.classifyCartola||classifyCartola;
+  window.classifyCartola=classifyCartola=function(desc){
+    const raw=clean(desc);
+    if(/propina|propinas|tip|tips|gratuidad|gratificacion/.test(raw))return {entity:null,cat:'rem_propina',label:'Propinas'};
+    if(/transbank|tbk|pedidosya|uber\s*eats|rappi/.test(raw))return {entity:null,cat:'ing_transfer',label:'Abono plataforma / medio de pago'};
+    return oldClassifyCartola(desc);
+  };
+  const oldClassifyCaja=window.classifyCaja||classifyCaja;
+  window.classifyCaja=classifyCaja=function(item){
+    const raw=clean(item?.comentario||'');
+    if(/propina|propinas|tip|tips|gratuidad|gratificacion/.test(raw))return {entity:null,cat:'rem_propina',label:'Propinas',tags:[{cat:'rem_propina',label:'Propinas'}]};
+    return oldClassifyCaja(item);
+  };
+
+  // Renombra el concepto antiguo para que no parezca gasto/comisión cobrada.
+  try{
+    if(typeof CAJONES_DEF!=='undefined'){
+      const c=CAJONES_DEF.find(x=>x.id==='comisiones');
+      if(c){c.name='Conciliación plataformas';c.desc='Referencia: ventas sistema vs depósitos recibidos. No se descuenta como gasto.';c.meta=null;}
+    }
+  }catch(e){}
+
+  function install(){
+    if($('#v16-styles'))return;
+    const st=document.createElement('style'); st.id='v16-styles'; st.textContent=`
+      .v16-empty{padding:34px 0;border-top:1px solid var(--bd);border-bottom:1px solid var(--bd);display:flex;flex-direction:column;gap:4px}.v16-empty b{font-size:16px}.v16-empty span{font-size:12px;color:var(--tx-3)}
+      .v16-head{display:flex;justify-content:space-between;align-items:center;margin:4px 0 18px}.v16-head b{display:block;font-size:18px;letter-spacing:-.03em}.v16-head span{display:block;font-size:12px;color:var(--tx-3);margin-top:2px}.v16-seg{display:flex;background:#eef1ec;border-radius:999px;padding:3px}.v16-seg button{border:0;background:transparent;border-radius:999px;padding:7px 11px;font-size:12px;font-weight:800;cursor:pointer}.v16-seg button.active{background:#0f3d2e;color:#fff}
+      .v16-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:22px}.v16-main{min-width:0;transition:opacity .18s ease,transform .18s ease}.v16-main.is-saving{opacity:0;transform:translateY(8px)}.v16-exp{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;border-bottom:1px solid var(--bd);padding-bottom:16px;margin-bottom:14px}.v16-exp small{font-size:11px;color:var(--tx-3);font-weight:800;text-transform:uppercase;letter-spacing:.06em}.v16-exp h3{font-size:17px;letter-spacing:-.03em;margin:5px 0 0;line-height:1.25}.v16-exp strong{font-size:24px;color:#0f3d2e;white-space:nowrap;letter-spacing:-.04em}.v16-line{display:grid;grid-template-columns:96px 1fr;align-items:center;gap:12px;margin:10px 0}.v16-line label{font-size:11px;color:var(--tx-3);font-weight:850;text-transform:uppercase;letter-spacing:.07em}.v16-line input,.v16-line select{height:38px;border:1px solid var(--bd);border-radius:10px;background:#fff;padding:8px 11px;font:inherit;font-size:13px}.v16-cats{margin-top:18px}.v16-cat-group{margin:16px 0}.v16-cat-group>div{font-size:10px;font-weight:850;text-transform:uppercase;letter-spacing:.1em;color:#9a9a9a;margin-bottom:8px}.v16-cat-group section{display:flex;flex-wrap:wrap;gap:7px}.v16-cat-group button{border:1px solid var(--bd);background:#fff;border-radius:999px;padding:7px 10px;font-size:12px;font-weight:750;cursor:pointer}.v16-cat-group button.active{background:#0f3d2e;color:#fff;border-color:#0f3d2e}.v16-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;padding-top:16px;border-top:1px solid var(--bd)}
+      .v16-queue{display:flex;flex-direction:column;gap:7px;max-height:620px;overflow:auto;padding-right:3px}.v16-queue button{border:0;border-bottom:1px solid var(--bd);background:transparent;text-align:left;padding:9px 4px;cursor:pointer}.v16-queue button.active{background:#eef8f2;border-radius:10px;padding:9px}.v16-queue b{display:block;color:#0f3d2e;font-size:13px}.v16-queue span{display:block;color:var(--tx-2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+      @media(max-width:980px){.v16-grid{grid-template-columns:1fr}.v16-queue{max-height:240px}.v16-line{grid-template-columns:1fr;gap:5px}}
+    `; document.head.appendChild(st);
+  }
+
+  const prevRender=window.renderEntityPage;
+  window.renderEntityPage=function(type){
+    install();
+    const filter=window.v13ProvFilter||window.v12ProvFilter||window.v8ProvFilter||'';
+    if(type==='proveedor' && filter==='revisar'){
+      const unmatched=$('#prov-unmatched'); if(unmatched)unmatched.style.display='none';
+      render();
+      return;
+    }
+    return prevRender?prevRender.apply(this,arguments):undefined;
+  };
+  function openReview(){window.v8ProvFilter='revisar';window.v12ProvFilter='revisar';window.v13ProvFilter='revisar'; if(typeof nav==='function')nav('proveedores'); else render(); setTimeout(render,0);}
+  window.v15OpenReview=window.v16OpenReview=openReview;
+  window.v8SetProvFilter=function(f){window.v8ProvFilter=f;window.v12ProvFilter=f;window.v13ProvFilter=f; if(typeof renderEntityPage==='function')renderEntityPage('proveedor');};
+  window.v13SetProvFilter=window.v8SetProvFilter;
+  const oldNav=window.nav;
+  if(oldNav){window.nav=function(page){const r=oldNav.apply(this,arguments);setTimeout(function(){document.querySelectorAll('#prov-filters .fp').forEach(x=>{if(/Revisar|Clasificar/i.test(x.textContent||'')){x.textContent='Clasificar';x.onclick=function(){openReview();};}});const dash=document.querySelector('#dash-alert button');if(dash){dash.textContent='Clasificar transferencias →';dash.onclick=function(ev){ev.preventDefault();openReview();};}},0);return r;};}
+  install();
+})();
+</script>
+
 </body>
 </html>
